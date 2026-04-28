@@ -7,6 +7,7 @@ import {
   extractNetworkLinks,
 } from './links.js';
 import { getDefaultDockerClient } from './connection.js';
+import { buildKubernetesGraphIfAvailable } from './kubernetes.js';
 
 export async function buildGraph(
   composeFile?: string,
@@ -88,5 +89,11 @@ export async function buildGraph(
   const fileLinks = await extractDependsOnFromFile(composeFile, nodes, containerProject, seen);
   const netLinks = extractNetworkLinks(networkMap);
 
-  return { nodes, links: [...labelLinks, ...fileLinks, ...netLinks] };
+  const kubernetes =
+    host === 'local' ? await buildKubernetesGraphIfAvailable() : { nodes: [], links: [] };
+
+  return {
+    nodes: [...nodes, ...kubernetes.nodes],
+    links: [...labelLinks, ...fileLinks, ...netLinks, ...kubernetes.links],
+  };
 }

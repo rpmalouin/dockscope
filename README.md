@@ -25,7 +25,7 @@ A browser-based 3D dependency graph of your Docker services with live health, lo
 
 ## Quick Start
 
-> **Prerequisites:** [Node.js](https://nodejs.org/) (v18+) and [Docker](https://docs.docker.com/get-docker/) must be installed and running.
+> **Prerequisites:** [Node.js](https://nodejs.org/) (v18+) and [Docker](https://docs.docker.com/get-docker/) must be installed and running. Kubernetes graph support is enabled automatically when DockScope can load a kubeconfig or in-cluster service account with read access to the Kubernetes API.
 
 ```bash
 npx dockscope up
@@ -69,6 +69,7 @@ Opens `http://localhost:4681`.
 - **Compose Manager** — Up, down, stop, restart, destroy entire projects. Cached metadata survives `docker compose down`.
 - **Container Inspection** — Env vars (secrets auto-masked), labels, mounts, processes, filesystem diff — all in sidebar tabs.
 - **Search & Filters** — Real-time search by name/image, status filters (running/stopped/unhealthy), network color toggle.
+- **Kubernetes Graph** — Pods, Services, Ingresses, and HPAs are rendered alongside Docker resources when Kubernetes API credentials are available. Services link to selected pods, Ingresses link to Services, HPAs show current vs desired replicas, and the HUD can filter Kubernetes resources by namespace.
 
 ## Keyboard Shortcuts
 

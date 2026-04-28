@@ -26,11 +26,22 @@
 
 <div class="sidebar-content">
   <div class="info-section">
-    <span class="field-label">Image</span>
+    <span class="field-label">{node.runtime === 'kubernetes' ? 'Resource' : 'Image'}</span>
     <button class="copyable mono" onclick={() => copyToClipboard(node.image, 'image')}
       >{node.image}</button
     >
   </div>
+
+  {#if node.runtime === 'kubernetes'}
+    <div class="info-section">
+      <span class="field-label">Kind</span>
+      <span class="tag">{node.kind}</span>
+    </div>
+    <div class="info-section">
+      <span class="field-label">Namespace</span>
+      <span class="tag">{node.namespace}</span>
+    </div>
+  {/if}
 
   <div class="info-section">
     <span class="field-label">Status</span>
@@ -40,8 +51,9 @@
   </div>
 
   <div class="info-section">
-    <span class="field-label">Container ID</span>
-    <button class="copyable mono" onclick={() => copyToClipboard(node.containerId, 'container ID')}
+    <span class="field-label">{node.runtime === 'kubernetes' ? 'Resource ID' : 'Container ID'}</span
+    >
+    <button class="copyable mono" onclick={() => copyToClipboard(node.containerId, 'resource ID')}
       >{node.id}</button
     >
   </div>

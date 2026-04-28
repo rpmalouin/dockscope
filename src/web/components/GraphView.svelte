@@ -27,6 +27,7 @@
     selectedNode: ServiceNode | null;
     searchQuery: string;
     statusFilter: Set<string>;
+    scopeFilter: string;
     colorNetworks: boolean;
     onHelpClick: () => void;
   }
@@ -37,6 +38,7 @@
     selectedNode,
     searchQuery,
     statusFilter,
+    scopeFilter,
     colorNetworks,
     onHelpClick,
   }: Props = $props();
@@ -79,7 +81,29 @@
   const warningRings: THREE.Sprite[] = [];
 
   // --- Node visibility ---
+  function isInScope(node: any): boolean {
+    if (!scopeFilter) {
+      return true;
+    }
+
+    const [type, ...rest] = scopeFilter.split(':');
+    const value = rest.join(':');
+    if (type === 'kubernetes') {
+      return node.runtime === 'kubernetes' && node.namespace === value;
+    }
+    if (type === 'docker-project') {
+      return node.runtime !== 'kubernetes' && node.project === value;
+    }
+    if (type === 'docker-host') {
+      return node.runtime !== 'kubernetes' && !node.project && (node.host || 'local') === value;
+    }
+    return true;
+  }
+
   function isNodeVisible(node: any): boolean {
+    if (!isInScope(node)) {
+      return false;
+    }
     if (statusFilter.size > 0) {
       const match =
         (statusFilter.has('running') && node.status === 'running') ||
@@ -94,7 +118,9 @@
       if (
         !node.name?.toLowerCase().includes(q) &&
         !node.fullName?.toLowerCase().includes(q) &&
-        !node.image?.toLowerCase().includes(q)
+        !node.image?.toLowerCase().includes(q) &&
+        !node.namespace?.toLowerCase().includes(q) &&
+        !node.kind?.toLowerCase().includes(q)
       ) {
         return false;
       }
@@ -185,6 +211,9 @@
     if (link.type === 'depends_on') {
       return hl ? 'rgba(255,138,43,0.5)' : 'rgba(255,138,43,0.08)';
     }
+    if (link.type === 'kubernetes') {
+      return hl ? 'rgba(168,85,247,0.55)' : 'rgba(168,85,247,0.16)';
+    }
     if (colorNetworks) {
       const rgb = networkColorMap.get(link.label) || '0,228,255';
       return hl ? `rgba(${rgb},0.6)` : `rgba(${rgb},0.18)`;
@@ -204,7 +233,7 @@
       return inImpact ? 1 : 0.05;
     }
 
-    const base = link.type === 'depends_on' ? 0.3 : 0.5;
+    const base = link.type === 'depends_on' ? 0.3 : link.type === 'kubernetes' ? 0.4 : 0.5;
     return hl ? base + 1 : base;
   }
 
@@ -233,7 +262,9 @@
       .linkDirectionalArrowRelPos(1)
       .linkDirectionalArrowColor((link: any) => getLinkColor(link))
       .linkOpacity(0.7)
-      .linkLabel((link: any) => (link.type === 'depends_on' ? 'depends_on' : link.label || ''))
+      .linkLabel((link: any) =>
+        link.type === 'depends_on' ? 'depends_on' : link.label || link.type || '',
+      )
       .cooldownTicks(100)
       .d3AlphaDecay(0.08)
       .d3VelocityDecay(0.6)
@@ -477,7 +508,7 @@
     if (!graph) {
       return;
     }
-    const hasFilter = searchQuery || statusFilter.size > 0;
+    const hasFilter = searchQuery || statusFilter.size > 0 || scopeFilter;
     if (!hasFilter) {
       graph.nodeVisibility(() => true);
       graph.linkVisibility(() => true);
@@ -494,7 +525,9 @@
           (n) =>
             n.name.toLowerCase().includes(q) ||
             n.fullName?.toLowerCase().includes(q) ||
-            n.image.toLowerCase().includes(q),
+            n.image.toLowerCase().includes(q) ||
+            n.namespace?.toLowerCase().includes(q) ||
+            n.kind?.toLowerCase().includes(q),
         );
         if (matches.length === 1) {
           const node = matches[0] as any;

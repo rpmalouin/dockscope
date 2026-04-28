@@ -38,6 +38,17 @@ export const STATUS_COLORS: Record<string, string> = {
 };
 
 export function getNodeColor(node: any): string {
+  if (node.runtime === 'kubernetes') {
+    if (node.kind === 'service') {
+      return '#a855f7';
+    }
+    if (node.kind === 'ingress') {
+      return '#ff8a2b';
+    }
+    if (node.kind === 'hpa') {
+      return node.health === 'starting' ? '#ffcc00' : '#00e4ff';
+    }
+  }
   if (node.status === 'running') {
     return STATUS_COLORS[`running:${node.health}`] || STATUS_COLORS['running:none'];
   }
@@ -87,13 +98,17 @@ export function buildNodeObject(
   const group = new THREE.Group();
   const color = getNodeColor(node);
   const isRunning = node.status === 'running';
+  const isKubernetes = node.runtime === 'kubernetes';
 
   const scale = 1 + importance * NC.importanceScale;
   const baseRadius = isRunning ? NC.baseRadius.running : NC.baseRadius.stopped;
   const radius = baseRadius * scale;
 
   // Core sphere
-  const geo = new THREE.SphereGeometry(radius, NC.sphereSegments.w, NC.sphereSegments.h);
+  const geo =
+    isKubernetes && node.kind === 'service'
+      ? new THREE.BoxGeometry(radius * 1.5, radius * 1.5, radius * 1.5)
+      : new THREE.SphereGeometry(radius, NC.sphereSegments.w, NC.sphereSegments.h);
   const baseEmissive = isRunning ? 0.25 + importance * 0.3 : 0.1;
   const coreMat = new THREE.MeshPhongMaterial({
     color,
@@ -162,7 +177,7 @@ export function buildNodeObject(
   }
 
   // Label
-  const label = new SpriteText(node.name);
+  const label = new SpriteText(isKubernetes && node.kind ? `${node.kind}:${node.name}` : node.name);
   label.color = '#c8cede';
   label.textHeight = NC.labelHeight;
   label.fontFace = "'Fira Code', monospace";

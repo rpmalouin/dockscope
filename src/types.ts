@@ -4,9 +4,21 @@ export interface ServiceNode {
   fullName: string;
   project: string;
   host: string;
+  runtime?: 'docker' | 'kubernetes';
+  kind?: 'container' | 'pod' | 'service' | 'ingress' | 'hpa';
+  namespace?: string;
   containerId: string;
   image: string;
-  status: 'running' | 'exited' | 'paused' | 'restarting' | 'dead' | 'created' | 'removing';
+  status:
+    | 'running'
+    | 'exited'
+    | 'paused'
+    | 'restarting'
+    | 'dead'
+    | 'created'
+    | 'removing'
+    | 'pending'
+    | 'unknown';
   health: 'healthy' | 'unhealthy' | 'starting' | 'none';
   ports: string[];
   networks: string[];
@@ -23,7 +35,7 @@ export interface ServiceNode {
 export interface ServiceLink {
   source: string;
   target: string;
-  type: 'depends_on' | 'network';
+  type: 'depends_on' | 'network' | 'kubernetes';
   label?: string;
 }
 

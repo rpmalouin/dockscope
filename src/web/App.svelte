@@ -15,6 +15,7 @@
   let selectedNode = $state<ServiceNode | null>(null);
   let searchQuery = $state('');
   let statusFilter = $state<Set<string>>(new Set());
+  let scopeFilter = $state('');
   let showHelp = $state(false);
   let showProjects = $state(false);
   let showHosts = $state(false);
@@ -30,6 +31,50 @@
   let statusbarHeight: number = $state(UI.statusbar.default);
   let dragging = $state<'sidebar' | 'statusbar' | null>(null);
   let latestVersion = $state<string | null>(null);
+  let scopeOptions = $derived.by(() => {
+    const options: { value: string; label: string }[] = [];
+
+    const dockerProjects = [
+      ...new Set(
+        docker.graph.nodes
+          .filter((node) => node.runtime !== 'kubernetes' && node.project)
+          .map((node) => node.project),
+      ),
+    ].sort();
+    for (const project of dockerProjects) {
+      options.push({ value: `docker-project:${project}`, label: `Docker / ${project}` });
+    }
+
+    const standaloneHosts = [
+      ...new Set(
+        docker.graph.nodes
+          .filter((node) => node.runtime !== 'kubernetes' && !node.project)
+          .map((node) => node.host || 'local'),
+      ),
+    ].sort();
+    for (const host of standaloneHosts) {
+      options.push({ value: `docker-host:${host}`, label: `Docker / ${host}` });
+    }
+
+    const namespaces = [
+      ...new Set(
+        docker.graph.nodes
+          .filter((node) => node.runtime === 'kubernetes' && node.namespace)
+          .map((node) => node.namespace!),
+      ),
+    ].sort();
+    for (const namespace of namespaces) {
+      options.push({ value: `kubernetes:${namespace}`, label: `Kubernetes / ${namespace}` });
+    }
+
+    return options;
+  });
+
+  $effect(() => {
+    if (scopeFilter && !scopeOptions.some((option) => option.value === scopeFilter)) {
+      scopeFilter = '';
+    }
+  });
 
   onMount(() => {
     // Check for updates
@@ -125,6 +170,7 @@
       {selectedNode}
       {searchQuery}
       {statusFilter}
+      {scopeFilter}
       {colorNetworks}
       onHelpClick={() => (showHelp = !showHelp)}
     />
@@ -191,6 +237,17 @@
       </div>
     </div>
 
+    {#if scopeOptions.length > 1}
+      <div class="hud-group scope-group">
+        <select class="scope-select" bind:value={scopeFilter} title="Graph scope">
+          <option value="">All scopes</option>
+          {#each scopeOptions as option}
+            <option value={option.value}>{option.label}</option>
+          {/each}
+        </select>
+      </div>
+    {/if}
+
     <!-- Actions: projects + filters (compact) -->
     <div class="hud-group actions-group">
       <button class="hud-icon-btn" onclick={() => (showHosts = true)} title="Docker hosts">
@@ -243,7 +300,7 @@
       {#if docker.graph.nodes.length > 0}
         <button
           class="hud-icon-btn"
-          class:active={statusFilter.size > 0 || colorNetworks}
+          class:active={statusFilter.size > 0 || scopeFilter || colorNetworks}
           title="Filters"
           onclick={(e) => {
             filterBtn = e.currentTarget as HTMLElement;

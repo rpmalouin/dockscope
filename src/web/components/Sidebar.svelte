@@ -47,6 +47,7 @@
     typeToConfirm?: string;
     action: () => Promise<void>;
   } | null>(null);
+  let isKubernetesNode = $derived(node?.runtime === 'kubernetes');
 
   async function doAction(action: string) {
     if (!node || actionPending) {
@@ -101,6 +102,9 @@
     if (!node) {
       return;
     }
+    if (isKubernetesNode && activeTab !== 'info') {
+      activeTab = 'info';
+    }
     // Fall back to 'info' only if current tab isn't available for this node
     const runningTabs = ['top', 'exec'];
     if (runningTabs.includes(activeTab) && node.status !== 'running' && node.status !== 'paused') {
@@ -109,6 +113,12 @@
     inspect = null;
     history = [];
     showMore = false;
+
+    if (isKubernetesNode) {
+      stats = null;
+      inspect = null;
+      return;
+    }
 
     if (node.status === 'running') {
       fetch(`/api/containers/${node.containerId}/stats`)
@@ -145,7 +155,7 @@
     const tab = activeTab;
     const n = node;
     untrack(() => {
-      if (tab === 'logs' && n) {
+      if (tab === 'logs' && n && n.runtime !== 'kubernetes') {
         subscribeLogs(n.containerId);
       } else {
         unsubscribeLogs();
@@ -161,9 +171,7 @@
     <div class="sidebar-empty">
       <div class="brand">DockScope</div>
       <div class="brand-sub">Infrastructure Debugger</div>
-      <div class="instruction">
-        Select a container node in the graph to inspect its configuration, metrics, and live logs.
-      </div>
+      <div class="instruction">Select a graph node to inspect infrastructure metadata.</div>
       <div class="legend">
         <div class="legend-title">Legend</div>
         <div class="legend-item"><span class="status-dot running"></span> Running (healthy)</div>
@@ -192,7 +200,7 @@
         <h3>{node.name}</h3>
       </div>
       <div class="header-right">
-        {#if node.status === 'running'}
+        {#if !isKubernetesNode && node.status === 'running'}
           <button
             class="act-icon warning"
             title="Pause"
@@ -246,7 +254,7 @@
               ><rect x="4" y="4" width="16" height="16" rx="2" /></svg
             >
           </button>
-        {:else if node.status === 'paused'}
+        {:else if !isKubernetesNode && node.status === 'paused'}
           <button
             class="act-icon success"
             title="Unpause"
@@ -277,7 +285,7 @@
               <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
             </svg>
           </button>
-        {:else}
+        {:else if !isKubernetesNode}
           <button
             class="act-icon success"
             title="Start"
@@ -291,23 +299,25 @@
         {/if}
 
         <!-- More actions trigger -->
-        <button
-          class="act-icon"
-          title="More actions"
-          onclick={(e) => {
-            moreBtn = e.currentTarget as HTMLElement;
-            showMore = !showMore;
-          }}
-          disabled={actionPending}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
-            ><circle cx="12" cy="5" r="2" /><circle cx="12" cy="12" r="2" /><circle
-              cx="12"
-              cy="19"
-              r="2"
-            /></svg
+        {#if !isKubernetesNode}
+          <button
+            class="act-icon"
+            title="More actions"
+            onclick={(e) => {
+              moreBtn = e.currentTarget as HTMLElement;
+              showMore = !showMore;
+            }}
+            disabled={actionPending}
           >
-        </button>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
+              ><circle cx="12" cy="5" r="2" /><circle cx="12" cy="12" r="2" /><circle
+                cx="12"
+                cy="19"
+                r="2"
+              /></svg
+            >
+          </button>
+        {/if}
 
         <span class="header-sep"></span>
         <button class="close-btn" onclick={onClose}>&times;</button>
@@ -319,24 +329,29 @@
         class="tab {activeTab === 'info' ? 'active' : ''}"
         onclick={() => (activeTab = 'info')}>Info</button
       >
-      <button class="tab {activeTab === 'env' ? 'active' : ''}" onclick={() => (activeTab = 'env')}
-        >Env</button
-      >
-      <button
-        class="tab {activeTab === 'logs' ? 'active' : ''}"
-        onclick={() => (activeTab = 'logs')}>Logs</button
-      >
-      {#if node.status === 'running' || node.status === 'paused'}
+      {#if !isKubernetesNode}
+        <button
+          class="tab {activeTab === 'env' ? 'active' : ''}"
+          onclick={() => (activeTab = 'env')}>Env</button
+        >
+        <button
+          class="tab {activeTab === 'logs' ? 'active' : ''}"
+          onclick={() => (activeTab = 'logs')}>Logs</button
+        >
+      {/if}
+      {#if !isKubernetesNode && (node.status === 'running' || node.status === 'paused')}
         <button
           class="tab {activeTab === 'top' ? 'active' : ''}"
           onclick={() => (activeTab = 'top')}>Top</button
         >
       {/if}
-      <button
-        class="tab {activeTab === 'diff' ? 'active' : ''}"
-        onclick={() => (activeTab = 'diff')}>Diff</button
-      >
-      {#if node.status === 'running'}
+      {#if !isKubernetesNode}
+        <button
+          class="tab {activeTab === 'diff' ? 'active' : ''}"
+          onclick={() => (activeTab = 'diff')}>Diff</button
+        >
+      {/if}
+      {#if !isKubernetesNode && node.status === 'running'}
         <button
           class="tab {activeTab === 'exec' ? 'active' : ''}"
           onclick={() => (activeTab = 'exec')}>Exec</button

@@ -31,6 +31,7 @@
   "author": "Manuel Tomé",
   "license": "MIT",
   "dependencies": {
+    "@kubernetes/client-node": "^1.4.0",
     "commander": "^12.1.0",
     "cors": "^2.8.5",
     "dockerode": "^4.0.4",

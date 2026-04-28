@@ -77,7 +77,7 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
 
   const refreshStats = async () => {
     for (const node of cachedGraph.nodes) {
-      if (node.status !== 'running') {
+      if (node.runtime === 'kubernetes' || node.status !== 'running') {
         continue;
       }
       try {

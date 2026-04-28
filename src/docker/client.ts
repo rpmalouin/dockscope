@@ -5,6 +5,7 @@ export {
   initDockerClient,
 } from './connection.js';
 export { buildGraph } from './graph.js';
+export { buildKubernetesGraph, buildKubernetesGraphIfAvailable } from './kubernetes.js';
 export { composeAction, listComposeProjects } from './projects.js';
 export {
   containerAction,
