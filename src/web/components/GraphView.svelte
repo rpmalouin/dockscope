@@ -5,7 +5,13 @@
   import type { GraphData, ServiceNode } from '../../types';
   import { GRAPH } from '../lib/constants';
   import { computeImportance } from '../lib/importance';
-  import { buildNodeObject, highlightNode, getMeta, getNodeColor } from '../lib/nodeRenderer';
+  import {
+    buildNodeObject,
+    highlightNode,
+    getMeta,
+    getNodeColor,
+    refreshNodeObject,
+  } from '../lib/nodeRenderer';
   import { createClusteringForce, updateClusters, cleanupAllClusters } from '../lib/clustering';
   import {
     addDeployAnimation,
@@ -21,6 +27,11 @@
     updateBillboardPositions,
   } from '../lib/animations';
   import { buildNetworkColorMap } from '../lib/networkColors';
+  import {
+    captureGraphSnapshot,
+    diffGraphSnapshot,
+    type GraphSnapshot,
+  } from '../lib/graphReconcile';
   import { getDockerState } from '../stores/docker.svelte';
 
   interface Props {
@@ -81,6 +92,19 @@
 
   // --- Warning rings (shared with animation system) ---
   const warningRings: THREE.Sprite[] = [];
+
+  function syncWarningRingsFromGraph() {
+    if (!graph) {
+      return;
+    }
+    warningRings.length = 0;
+    for (const node of graph.graphData().nodes) {
+      const meta = node.__threeObj ? getMeta(node.__threeObj) : null;
+      if (meta?.warningRing) {
+        warningRings.push(meta.warningRing);
+      }
+    }
+  }
 
   // --- Node visibility ---
   function isInScope(node: any): boolean {
@@ -193,6 +217,18 @@
     }
   }
 
+  function reapplySelectionAndImpact() {
+    if (!graph) {
+      return;
+    }
+    const nodes = graph.graphData().nodes;
+    if (selectedId) {
+      const selected = nodes.find((node: any) => node.id === selectedId);
+      highlightNode(selected, true);
+    }
+    applyImpactDimming(nodes, impactedIds);
+  }
+
   let networkColorMap = $derived(buildNetworkColorMap(data.links));
 
   function getLinkColor(link: any): string {
@@ -287,6 +323,8 @@
       })
       .graphData(data);
     graph = g;
+    currentSnapshot = captureGraphSnapshot(data);
+    syncWarningRingsFromGraph();
 
     // Forces
     g.d3Force('charge')?.strength(FC.charge.strength).distanceMax(FC.charge.distanceMax);
@@ -402,70 +440,67 @@
   }
 
   // --- Graph data update ---
-  let prevGraphKey = '';
-  let prevStatusMap = new Map<string, string>();
+  let currentSnapshot: GraphSnapshot | null = null;
   $effect(() => {
     if (!graph) {
       return;
     }
-    if (data.nodes.length === 0) {
-      if (prevGraphKey !== '') {
-        prevGraphKey = '';
-        warningRings.length = 0;
-        graph.graphData({ nodes: [], links: [] });
-      }
+
+    const diff = diffGraphSnapshot(currentSnapshot, data);
+    if (!diff.needsGraphDataUpdate && diff.visualChangedNodeIds.size === 0) {
+      currentSnapshot = captureGraphSnapshot(data);
       return;
     }
 
-    const curStatusMap = new Map(data.nodes.map((n) => [n.id, `${n.status}:${n.health}`]));
-    const graphKey = data.nodes
-      .map((n) => `${n.id}:${n.status}:${n.health}`)
-      .sort()
-      .join(',');
-    if (graphKey === prevGraphKey) {
-      return;
-    }
-
-    // Detect which nodes changed status (for flash animation)
-    const changedIds = new Set<string>();
-    for (const [id, key] of curStatusMap) {
-      const prev = prevStatusMap.get(id);
-      if (prev && prev !== key) {
-        changedIds.add(id);
-      }
-    }
-    const oldStatusMap = prevStatusMap;
-    prevStatusMap = curStatusMap;
-
-    const prevIds = prevGraphKey
-      ? new Set(prevGraphKey.split(',').map((k) => k.split(':')[0]))
-      : new Set<string>();
-    const curIds = new Set(data.nodes.map((n) => n.id));
-    const isStructural = prevIds.size !== curIds.size || [...curIds].some((id) => !prevIds.has(id));
-    prevGraphKey = graphKey;
-
-    if (isStructural) {
+    if (diff.addedNodeIds.size > 0) {
       assignProjectPositions(data.nodes);
       resetDeployIndex();
     }
 
-    warningRings.length = 0;
-    graph.nodeThreeObject((node: any) => {
+    const nodesToRefresh = new Set(diff.visualChangedNodeIds);
+    if (diff.linksChanged) {
+      for (const node of data.nodes) {
+        nodesToRefresh.add(node.id);
+      }
+    } else if (diff.statusChangedNodeIds.size > 0) {
+      for (const link of data.links) {
+        if (link.type !== 'depends_on') {
+          continue;
+        }
+        const sourceId = typeof link.source === 'object' ? (link.source as any).id : link.source;
+        const targetId = typeof link.target === 'object' ? (link.target as any).id : link.target;
+        if (targetId && diff.statusChangedNodeIds.has(targetId)) {
+          nodesToRefresh.add(sourceId);
+        }
+      }
+    }
+
+    for (const node of data.nodes) {
+      if (diff.addedNodeIds.has(node.id) || !nodesToRefresh.has(node.id)) {
+        continue;
+      }
+      const group = (node as any).__threeObj as THREE.Group | undefined;
+      if (!group) {
+        continue;
+      }
       const imp = importanceMap.get(node.id) || 0;
-      const group = buildNodeObject(node, imp, hasBrokenDependency(node.id), warningRings);
+      refreshNodeObject(group, node, imp, hasBrokenDependency(node.id), warningRings);
       if (node.rolloutPhase === 'terminating') {
         addRolloutExitAnimation(group);
-      } else if (isStructural) {
-        addDeployAnimation(node.id, group);
-      } else if (changedIds.has(node.id)) {
-        const prevKey = oldStatusMap.get(node.id) || 'exited:none';
+      } else if (diff.statusChangedNodeIds.has(node.id)) {
+        const prevKey = currentSnapshot?.statusById.get(node.id) || 'exited:none';
         const [prevSt, prevHp] = prevKey.split(':');
         const prevColor = getNodeColor({ status: prevSt, health: prevHp });
         addStatusFlash(group, prevSt, node.status, prevColor);
       }
-      return group;
-    });
-    graph.graphData(data);
+    }
+
+    if (diff.needsGraphDataUpdate) {
+      graph.graphData(data);
+    }
+    currentSnapshot = captureGraphSnapshot(data);
+    syncWarningRingsFromGraph();
+    reapplySelectionAndImpact();
   });
 
   // --- Selection effect ---

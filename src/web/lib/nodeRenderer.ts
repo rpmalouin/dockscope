@@ -211,6 +211,51 @@ export function buildNodeObject(
   return group;
 }
 
+function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
+  if (Array.isArray(material)) {
+    for (const item of material) {
+      disposeMaterial(item);
+    }
+    return;
+  }
+  const map = (material as THREE.Material & { map?: THREE.Texture }).map;
+  map?.dispose();
+  material.dispose();
+}
+
+function disposeObject(obj: THREE.Object3D): void {
+  for (const child of [...obj.children]) {
+    disposeObject(child);
+  }
+  const mesh = obj as THREE.Object3D & {
+    geometry?: THREE.BufferGeometry;
+    material?: THREE.Material | THREE.Material[];
+  };
+  mesh.geometry?.dispose();
+  if (mesh.material) {
+    disposeMaterial(mesh.material);
+  }
+}
+
+export function refreshNodeObject(
+  group: THREE.Group,
+  node: any,
+  importance: number,
+  hasBrokenDep: boolean,
+  warningRings: THREE.Sprite[],
+): void {
+  const replacement = buildNodeObject(node, importance, hasBrokenDep, warningRings);
+  for (const child of [...group.children]) {
+    group.remove(child);
+    disposeObject(child);
+  }
+  for (const child of [...replacement.children]) {
+    replacement.remove(child);
+    group.add(child);
+  }
+  (group as any).__meta = (replacement as any).__meta;
+}
+
 export function highlightNode(node: any, active: boolean): void {
   if (!node?.__threeObj) {
     return;

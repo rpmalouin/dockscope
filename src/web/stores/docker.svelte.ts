@@ -299,7 +299,7 @@ export function initDocker() {
   fetch('/api/graph')
     .then((r) => r.json())
     .then((data) => {
-      graph = data;
+      mergeGraph(data);
     })
     .catch(() => {});
 
