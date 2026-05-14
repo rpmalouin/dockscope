@@ -2,25 +2,33 @@
   import { getDockerState } from '../../stores/docker.svelte';
   import { ansiToHtml, highlightLogSearch } from '../../lib/ansi';
 
+  interface Props {
+    logs?: string;
+    placeholder?: string;
+  }
+
+  let { logs, placeholder = 'Connecting to log stream...' }: Props = $props();
+
   const docker = getDockerState();
 
   let logBottom = $state<HTMLDivElement | null>(null);
   let logSearch = $state('');
 
-  let processed = $derived(ansiToHtml(docker.streamingLogs));
+  let activeLogs = $derived(logs ?? docker.streamingLogs);
+  let processed = $derived(ansiToHtml(activeLogs));
   let searched = $derived(
     logSearch ? highlightLogSearch(processed, logSearch) : { html: processed, count: 0 },
   );
 
   // Auto-scroll logs to bottom
   $effect(() => {
-    if (docker.streamingLogs && logBottom) {
+    if (activeLogs && logBottom) {
       logBottom.scrollIntoView({ behavior: 'smooth' });
     }
   });
 
   function exportLogs() {
-    const text = docker.streamingLogs;
+    const text = activeLogs;
     if (!text) {
       return;
     }
@@ -39,12 +47,7 @@
   {#if logSearch}
     <span class="log-match-count">{searched.count} match{searched.count !== 1 ? 'es' : ''}</span>
   {/if}
-  <button
-    class="log-export-btn"
-    title="Export logs"
-    onclick={exportLogs}
-    disabled={!docker.streamingLogs}
-  >
+  <button class="log-export-btn" title="Export logs" onclick={exportLogs} disabled={!activeLogs}>
     <svg
       width="12"
       height="12"
@@ -63,6 +66,6 @@
 </div>
 <div class="sidebar-logs">
   <pre>{@html searched.html ||
-      '<span style="color:var(--text-dim);font-style:italic">Connecting to log stream...</span>'}<div
+      `<span style="color:var(--text-dim);font-style:italic">${placeholder}</span>`}<div
       bind:this={logBottom}></div></pre>
 </div>

@@ -104,11 +104,13 @@ export function buildNodeObject(
   const baseRadius = isRunning ? NC.baseRadius.running : NC.baseRadius.stopped;
   const radius = baseRadius * scale;
 
-  // Core sphere
+  // Core primitive
   const geo =
     isKubernetes && node.kind === 'service'
       ? new THREE.BoxGeometry(radius * 1.5, radius * 1.5, radius * 1.5)
-      : new THREE.SphereGeometry(radius, NC.sphereSegments.w, NC.sphereSegments.h);
+      : isKubernetes && node.kind === 'hpa'
+        ? new THREE.TetrahedronGeometry(radius * 1.35, 0)
+        : new THREE.SphereGeometry(radius, NC.sphereSegments.w, NC.sphereSegments.h);
   const baseEmissive = isRunning ? 0.25 + importance * 0.3 : 0.1;
   const coreMat = new THREE.MeshPhongMaterial({
     color,

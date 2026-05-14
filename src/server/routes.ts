@@ -9,8 +9,10 @@ import {
   getContainerStats,
   getContainerDiff,
   getContainerTop,
+  getKubernetesPodLogs,
   getSystemInfo,
   inspectContainer,
+  kubernetesResourceAction,
   listComposeProjects,
   removeContainer,
 } from '../docker/client.js';
@@ -142,6 +144,43 @@ export function setupRoutes(
     '/api/system',
     asyncRoute(async (_req, res) => {
       res.json(await getSystemInfo());
+    }),
+  );
+
+  app.post(
+    '/api/kubernetes/action',
+    asyncRoute(async (req, res) => {
+      const { id, action, minReplicas, maxReplicas } = req.body as {
+        id?: string;
+        action?: string;
+        minReplicas?: number;
+        maxReplicas?: number;
+      };
+      if (!id || !action) {
+        res.status(400).json({ error: 'Both id and action are required' });
+        return;
+      }
+      if (!['delete', 'restart', 'set_hpa_constraints'].includes(action)) {
+        res.status(400).json({ error: `Invalid Kubernetes action: ${action}` });
+        return;
+      }
+      await kubernetesResourceAction(id, action as 'delete' | 'restart' | 'set_hpa_constraints', {
+        minReplicas,
+        maxReplicas,
+      });
+      res.json({ ok: true });
+    }),
+  );
+
+  app.post(
+    '/api/kubernetes/logs',
+    asyncRoute(async (req, res) => {
+      const { id, tail } = req.body as { id?: string; tail?: number };
+      if (!id) {
+        res.status(400).json({ error: 'id is required' });
+        return;
+      }
+      res.json({ logs: await getKubernetesPodLogs(id, tail || 200) });
     }),
   );
 

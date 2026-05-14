@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildKubernetesGraph, type KubernetesResources } from '../kubernetes';
+import {
+  buildKubernetesGraph,
+  buildHpaConstraintPatch,
+  parseKubernetesResourceId,
+  podsForRestart,
+  type KubernetesResources,
+} from '../kubernetes';
 
 const resources: KubernetesResources = {
   pods: {
@@ -119,5 +125,63 @@ describe('buildKubernetesGraph', () => {
         },
       ]),
     );
+  });
+});
+
+describe('parseKubernetesResourceId', () => {
+  it('parses graph resource IDs into action targets', () => {
+    expect(parseKubernetesResourceId('k8s:pod:prod:api-7d9f5b8c4-x2k9q')).toEqual({
+      kind: 'pod',
+      namespace: 'prod',
+      name: 'api-7d9f5b8c4-x2k9q',
+    });
+  });
+
+  it('rejects non-Kubernetes IDs', () => {
+    expect(() => parseKubernetesResourceId('123456789abc')).toThrow(
+      'Invalid Kubernetes resource ID',
+    );
+  });
+});
+
+describe('podsForRestart', () => {
+  it('resolves backing pods for services, ingresses, and hpas', () => {
+    const expectedPod = resources.pods.items![0];
+
+    expect(
+      podsForRestart(resources, {
+        kind: 'service',
+        namespace: 'prod',
+        name: 'api',
+      }),
+    ).toEqual([expectedPod]);
+    expect(
+      podsForRestart(resources, {
+        kind: 'ingress',
+        namespace: 'prod',
+        name: 'api',
+      }),
+    ).toEqual([expectedPod]);
+    expect(
+      podsForRestart(resources, {
+        kind: 'hpa',
+        namespace: 'prod',
+        name: 'api',
+      }),
+    ).toEqual([expectedPod]);
+  });
+});
+
+describe('buildHpaConstraintPatch', () => {
+  it('creates a narrow JSON patch for HPA replica constraints', () => {
+    expect(buildHpaConstraintPatch(2, 8)).toEqual([
+      { op: 'add', path: '/spec/minReplicas', value: 2 },
+      { op: 'replace', path: '/spec/maxReplicas', value: 8 },
+    ]);
+  });
+
+  it('validates replica bounds before patching', () => {
+    expect(() => buildHpaConstraintPatch(0, 8)).toThrow('minReplicas');
+    expect(() => buildHpaConstraintPatch(5, 4)).toThrow('maxReplicas');
   });
 });

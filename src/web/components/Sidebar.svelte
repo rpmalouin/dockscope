@@ -10,6 +10,7 @@
     getAnomaliesForContainer,
   } from '../stores/docker.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import HpaReplicaDialog from './HpaReplicaDialog.svelte';
   import SidebarInfo from './sidebar/SidebarInfo.svelte';
   import SidebarEnv from './sidebar/SidebarEnv.svelte';
   import SidebarLogs from './sidebar/SidebarLogs.svelte';
@@ -35,9 +36,11 @@
   let inspect = $state<ContainerInspect | null>(null);
   let history = $state<MetricPoint[]>([]);
   let activeTab = $state<'info' | 'env' | 'logs' | 'top' | 'diff' | 'exec'>('info');
+  let kubernetesLogs = $state('');
   let actionPending = $state(false);
   let showMore = $state(false);
   let moreBtn = $state<HTMLElement | null>(null);
+  let hpaDialog = $state<{ node: ServiceNode; min: number; max: number } | null>(null);
 
   let confirmDialog = $state<{
     title: string;
@@ -48,6 +51,13 @@
     action: () => Promise<void>;
   } | null>(null);
   let isKubernetesNode = $derived(node?.runtime === 'kubernetes');
+
+  function kubernetesRestartMessage(node: ServiceNode): string {
+    if (node.kind === 'pod') {
+      return `Restart pod ${node.name}? Kubernetes will delete the current pod so its controller can recreate it.`;
+    }
+    return `Restart backing pods for ${node.fullName}? DockScope will delete the pods resolved from this ${node.kind}.`;
+  }
 
   async function doAction(action: string) {
     if (!node || actionPending) {
@@ -92,9 +102,63 @@
     }
   }
 
+  type KubernetesUiAction = 'delete' | 'restart' | 'set_hpa_constraints';
+
+  async function doKubernetesAction(
+    action: KubernetesUiAction,
+    options: { minReplicas?: number; maxReplicas?: number } = {},
+    targetNode = node,
+  ) {
+    if (!targetNode || actionPending) {
+      return;
+    }
+    actionPending = true;
+    try {
+      const res = await fetch('/api/kubernetes/action', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: targetNode.containerId, action, ...options }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        addToast(`Failed to ${action}: ${err.error}`, 'error');
+      } else {
+        addToast(
+          `Kubernetes ${targetNode.kind} ${
+            action === 'restart' ? 'restarted' : action === 'delete' ? 'deleted' : 'updated'
+          }`,
+          'success',
+        );
+        if (action === 'delete') {
+          onClose();
+        }
+      }
+    } catch {
+      addToast(`Failed to ${action}`, 'error');
+    } finally {
+      actionPending = false;
+    }
+  }
+
   function confirm(opts: typeof confirmDialog) {
     showMore = false;
     confirmDialog = opts;
+  }
+
+  function getHpaReplicaRange(node: ServiceNode): { min: number; max: number } {
+    const range = node.ports.find((port) => port.endsWith(' range'))?.replace(' range', '');
+    const [minRaw, maxRaw] = (range || '').split('-');
+    const min = parseInt(minRaw, 10);
+    const max = parseInt(maxRaw, 10);
+    return {
+      min: Number.isFinite(min) ? min : 1,
+      max: Number.isFinite(max) ? max : Math.max(Number.isFinite(min) ? min : 1, 1),
+    };
+  }
+
+  function showHpaReplicaDialog(node: ServiceNode) {
+    const current = getHpaReplicaRange(node);
+    hpaDialog = { node, min: current.min, max: current.max };
   }
 
   // Fetch stats + inspect + history when node changes
@@ -112,6 +176,7 @@
     }
     inspect = null;
     history = [];
+    kubernetesLogs = '';
     showMore = false;
 
     if (isKubernetesNode) {
@@ -160,6 +225,20 @@
       } else {
         unsubscribeLogs();
       }
+      if (tab === 'logs' && n?.runtime === 'kubernetes' && n.kind === 'pod') {
+        fetch('/api/kubernetes/logs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: n.containerId, tail: 300 }),
+        })
+          .then((r) => r.json())
+          .then((d) => {
+            kubernetesLogs = d.logs || '';
+          })
+          .catch(() => {
+            kubernetesLogs = '';
+          });
+      }
     });
   });
 
@@ -200,7 +279,35 @@
         <h3>{node.name}</h3>
       </div>
       <div class="header-right">
-        {#if !isKubernetesNode && node.status === 'running'}
+        {#if isKubernetesNode}
+          <button
+            class="act-icon"
+            class:spinning={actionPending}
+            title="Restart backing pods"
+            onclick={() =>
+              confirm({
+                title: node.kind === 'pod' ? 'Restart Pod' : 'Restart Backing Pods',
+                message: kubernetesRestartMessage(node),
+                confirmLabel: 'Restart',
+                variant: 'warning',
+                action: () => doKubernetesAction('restart'),
+              })}
+            disabled={actionPending}
+          >
+            <svg
+              width="13"
+              height="13"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+            </svg>
+          </button>
+        {:else if !isKubernetesNode && node.status === 'running'}
           <button
             class="act-icon warning"
             title="Pause"
@@ -299,25 +406,23 @@
         {/if}
 
         <!-- More actions trigger -->
-        {#if !isKubernetesNode}
-          <button
-            class="act-icon"
-            title="More actions"
-            onclick={(e) => {
-              moreBtn = e.currentTarget as HTMLElement;
-              showMore = !showMore;
-            }}
-            disabled={actionPending}
+        <button
+          class="act-icon"
+          title="More actions"
+          onclick={(e) => {
+            moreBtn = e.currentTarget as HTMLElement;
+            showMore = !showMore;
+          }}
+          disabled={actionPending}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
+            ><circle cx="12" cy="5" r="2" /><circle cx="12" cy="12" r="2" /><circle
+              cx="12"
+              cy="19"
+              r="2"
+            /></svg
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
-              ><circle cx="12" cy="5" r="2" /><circle cx="12" cy="12" r="2" /><circle
-                cx="12"
-                cy="19"
-                r="2"
-              /></svg
-            >
-          </button>
-        {/if}
+        </button>
 
         <span class="header-sep"></span>
         <button class="close-btn" onclick={onClose}>&times;</button>
@@ -334,6 +439,11 @@
           class="tab {activeTab === 'env' ? 'active' : ''}"
           onclick={() => (activeTab = 'env')}>Env</button
         >
+        <button
+          class="tab {activeTab === 'logs' ? 'active' : ''}"
+          onclick={() => (activeTab = 'logs')}>Logs</button
+        >
+      {:else if node.kind === 'pod'}
         <button
           class="tab {activeTab === 'logs' ? 'active' : ''}"
           onclick={() => (activeTab = 'logs')}>Logs</button
@@ -375,7 +485,10 @@
     {:else if activeTab === 'env'}
       <SidebarEnv {inspect} />
     {:else if activeTab === 'logs'}
-      <SidebarLogs />
+      <SidebarLogs
+        logs={isKubernetesNode ? kubernetesLogs : undefined}
+        placeholder={isKubernetesNode ? 'Loading pod logs...' : 'Connecting to log stream...'}
+      />
     {:else if activeTab === 'top'}
       <SidebarTop containerId={node.containerId} />
     {:else if activeTab === 'diff'}
@@ -394,7 +507,44 @@
     style="top: {moreBtn.getBoundingClientRect().bottom + 4}px; right: {window.innerWidth -
       moreBtn.getBoundingClientRect().right}px;"
   >
-    {#if node.status === 'running' || node.status === 'paused'}
+    {#if node.runtime === 'kubernetes'}
+      <button
+        class="more-item"
+        onclick={() => {
+          showMore = false;
+          confirm({
+            title: node.kind === 'pod' ? 'Restart Pod' : 'Restart Backing Pods',
+            message: kubernetesRestartMessage(node),
+            confirmLabel: 'Restart',
+            variant: 'warning',
+            action: () => doKubernetesAction('restart'),
+          });
+        }}>Restart</button
+      >
+      {#if node.kind === 'hpa'}
+        <button
+          class="more-item"
+          onclick={() => {
+            showMore = false;
+            showHpaReplicaDialog(node);
+          }}>Set replica bounds</button
+        >
+      {/if}
+      <button
+        class="more-item danger"
+        onclick={() => {
+          showMore = false;
+          confirm({
+            title: `Delete ${node.kind}`,
+            message: `Delete ${node.fullName}? This removes the Kubernetes ${node.kind} resource from the cluster.`,
+            confirmLabel: 'Delete',
+            variant: 'danger',
+            typeToConfirm: node.name,
+            action: () => doKubernetesAction('delete'),
+          });
+        }}>Delete</button
+      >
+    {:else if node.status === 'running' || node.status === 'paused'}
       <button
         class="more-item"
         onclick={() => {
@@ -409,35 +559,55 @@
         }}>Kill</button
       >
     {/if}
-    <button
-      class="more-item danger"
-      onclick={() => {
-        showMore = false;
-        confirm({
-          title: 'Remove Container',
-          message: `Permanently remove ${node.name}? This deletes the container.`,
-          confirmLabel: 'Remove',
-          variant: 'danger',
-          typeToConfirm: node.name,
-          action: () => doRemove(false),
-        });
-      }}>Remove</button
-    >
-    <button
-      class="more-item danger"
-      onclick={() => {
-        showMore = false;
-        confirm({
-          title: 'Remove with Volumes',
-          message: `Remove ${node.name} and ALL its volumes? This is irreversible.`,
-          confirmLabel: 'Remove + Volumes',
-          variant: 'danger',
-          typeToConfirm: node.name,
-          action: () => doRemove(true),
-        });
-      }}>Remove + Volumes</button
-    >
+    {#if node.runtime !== 'kubernetes'}
+      <button
+        class="more-item danger"
+        onclick={() => {
+          showMore = false;
+          confirm({
+            title: 'Remove Container',
+            message: `Permanently remove ${node.name}? This deletes the container.`,
+            confirmLabel: 'Remove',
+            variant: 'danger',
+            typeToConfirm: node.name,
+            action: () => doRemove(false),
+          });
+        }}>Remove</button
+      >
+      <button
+        class="more-item danger"
+        onclick={() => {
+          showMore = false;
+          confirm({
+            title: 'Remove with Volumes',
+            message: `Remove ${node.name} and ALL its volumes? This is irreversible.`,
+            confirmLabel: 'Remove + Volumes',
+            variant: 'danger',
+            typeToConfirm: node.name,
+            action: () => doRemove(true),
+          });
+        }}>Remove + Volumes</button
+      >
+    {/if}
   </div>
+{/if}
+
+{#if hpaDialog}
+  <HpaReplicaDialog
+    resourceName={hpaDialog.node.fullName}
+    initialMin={hpaDialog.min}
+    initialMax={hpaDialog.max}
+    onConfirm={({ minReplicas, maxReplicas }) => {
+      const target = hpaDialog?.node;
+      hpaDialog = null;
+      if (target) {
+        doKubernetesAction('set_hpa_constraints', { minReplicas, maxReplicas }, target);
+      }
+    }}
+    onCancel={() => {
+      hpaDialog = null;
+    }}
+  />
 {/if}
 
 {#if confirmDialog}
