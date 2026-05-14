@@ -1,5 +1,7 @@
 import type {
   GraphData,
+  ServiceLink,
+  ServiceNode,
   DockerEvent,
   WSMessage,
   ContainerStats,
@@ -24,6 +26,9 @@ let diagnostics = $state<Map<string, CrashDiagnostic>>(new Map());
 let ws: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let shouldReconnect = false;
+let rolloutPruneTimer: ReturnType<typeof setTimeout> | null = null;
+
+const ROLLOUT_GHOST_TTL = 1600;
 
 function clearReconnectTimer() {
   if (reconnectTimer) {
@@ -48,6 +53,129 @@ function sendLogSubscription() {
       JSON.stringify({ type: 'subscribe_logs', data: { containerId: streamingLogContainerId } }),
     );
   }
+}
+
+function endpointId(endpoint: ServiceLink['source'] | { id?: string }): string {
+  return typeof endpoint === 'object' ? endpoint.id || '' : endpoint;
+}
+
+function normalizeLink(link: ServiceLink): ServiceLink {
+  return {
+    source: endpointId(link.source),
+    target: endpointId(link.target),
+    type: link.type,
+    label: link.label,
+  };
+}
+
+function isKubernetesPod(node: ServiceNode): boolean {
+  return node.runtime === 'kubernetes' && node.kind === 'pod';
+}
+
+function pruneLinksToExistingNodes(links: ServiceLink[], nodeIds: Set<string>): ServiceLink[] {
+  return links.filter(
+    (link) => nodeIds.has(endpointId(link.source)) && nodeIds.has(endpointId(link.target)),
+  );
+}
+
+function setGraphData(nodes: ServiceNode[], links: ServiceLink[]) {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  graph = { nodes, links: pruneLinksToExistingNodes(links, nodeIds) };
+  nodeIndex = new Map(nodes.map((node: any) => [node.id, node]));
+}
+
+function scheduleRolloutPrune() {
+  if (rolloutPruneTimer) {
+    clearTimeout(rolloutPruneTimer);
+    rolloutPruneTimer = null;
+  }
+
+  const now = Date.now();
+  const nextExpiry = Math.min(
+    ...graph.nodes
+      .map((node) => node.rolloutUntil)
+      .filter((until): until is number => typeof until === 'number' && until > now),
+  );
+  if (!Number.isFinite(nextExpiry)) {
+    return;
+  }
+
+  rolloutPruneTimer = setTimeout(
+    () => {
+      const cutoff = Date.now();
+      const nodes = graph.nodes.filter((node) => !node.rolloutUntil || node.rolloutUntil > cutoff);
+      setGraphData(nodes, graph.links);
+      scheduleRolloutPrune();
+    },
+    Math.max(0, nextExpiry - now),
+  );
+}
+
+function mergeGraph(incoming: GraphData) {
+  const now = Date.now();
+  const incomingIds = new Set(incoming.nodes.map((node) => node.id));
+  const existingMap = new Map(graph.nodes.map((node) => [node.id, node]));
+  const previousLinks = graph.links.map(normalizeLink);
+
+  // Merge: preserve d3 simulation positions (x, y, z, vx, vy, vz)
+  const mergedNodes = incoming.nodes.map((newNode) => {
+    const existing = existingMap.get(newNode.id);
+    if (existing) {
+      Object.assign(existing, {
+        name: newNode.name,
+        fullName: newNode.fullName,
+        project: newNode.project,
+        runtime: newNode.runtime,
+        kind: newNode.kind,
+        namespace: newNode.namespace,
+        containerId: newNode.containerId,
+        image: newNode.image,
+        status: newNode.status,
+        health: newNode.health,
+        ports: newNode.ports,
+        networks: newNode.networks,
+        volumeCount: newNode.volumeCount,
+        rolloutPhase: undefined,
+        rolloutUntil: undefined,
+      });
+      return existing;
+    }
+    return newNode;
+  });
+
+  const existingGhosts = graph.nodes.filter(
+    (node) =>
+      node.rolloutPhase === 'terminating' &&
+      (node.rolloutUntil || 0) > now &&
+      !incomingIds.has(node.id),
+  );
+  const removedPods = graph.nodes
+    .filter(
+      (node) =>
+        isKubernetesPod(node) && node.rolloutPhase !== 'terminating' && !incomingIds.has(node.id),
+    )
+    .map((node) => ({
+      ...node,
+      status: 'removing' as const,
+      health: 'starting' as const,
+      rolloutPhase: 'terminating' as const,
+      rolloutUntil: now + ROLLOUT_GHOST_TTL,
+    }));
+
+  const ghostNodes = [...existingGhosts, ...removedPods];
+  const ghostIds = new Set(ghostNodes.map((node) => node.id));
+  const ghostLinks = previousLinks.filter(
+    (link) => ghostIds.has(endpointId(link.source)) || ghostIds.has(endpointId(link.target)),
+  );
+
+  const linkMap = new Map<string, ServiceLink>();
+  for (const link of [...incoming.links.map(normalizeLink), ...ghostLinks]) {
+    const key = `${endpointId(link.source)}->${endpointId(link.target)}:${link.type}:${link.label || ''}`;
+    linkMap.set(key, link);
+  }
+
+  setGraphData([...mergedNodes, ...ghostNodes], [...linkMap.values()]);
+  scheduleRolloutPrune();
 }
 
 function isSocketActive(socket: WebSocket | null): boolean {
@@ -98,35 +226,7 @@ function connect() {
       const msg: WSMessage = JSON.parse(e.data);
       switch (msg.type) {
         case 'graph': {
-          const incoming = msg.data as GraphData;
-          const existingMap = new Map(graph.nodes.map((n: any) => [n.id, n]));
-
-          // Merge: preserve d3 simulation positions (x, y, z, vx, vy, vz)
-          const mergedNodes = incoming.nodes.map((newNode) => {
-            const existing = existingMap.get(newNode.id);
-            if (existing) {
-              Object.assign(existing, {
-                name: newNode.name,
-                fullName: newNode.fullName,
-                project: newNode.project,
-                runtime: newNode.runtime,
-                kind: newNode.kind,
-                namespace: newNode.namespace,
-                containerId: newNode.containerId,
-                image: newNode.image,
-                status: newNode.status,
-                health: newNode.health,
-                ports: newNode.ports,
-                networks: newNode.networks,
-                volumeCount: newNode.volumeCount,
-              });
-              return existing;
-            }
-            return newNode;
-          });
-
-          graph = { nodes: [...mergedNodes], links: [...incoming.links] };
-          nodeIndex = new Map(mergedNodes.map((n: any) => [n.id, n]));
+          mergeGraph(msg.data as GraphData);
           break;
         }
 
@@ -221,6 +321,10 @@ export function initDocker() {
     ws?.close();
     ws = null;
     connected = false;
+    if (rolloutPruneTimer) {
+      clearTimeout(rolloutPruneTimer);
+      rolloutPruneTimer = null;
+    }
   };
 }
 

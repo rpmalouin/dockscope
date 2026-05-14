@@ -33,6 +33,42 @@ export function addDeployAnimation(nodeId: string, group: THREE.Group): void {
   }, idx * GRAPH.node.deployStagger);
 }
 
+interface RolloutExitAnim {
+  obj: THREE.Group;
+  start: number;
+  dur: number;
+  materials: { mat: THREE.Material & { opacity?: number }; opacity: number }[];
+}
+
+const rolloutExitAnims: RolloutExitAnim[] = [];
+const rolloutExitGroups = new WeakSet<THREE.Group>();
+
+export function addRolloutExitAnimation(group: THREE.Group): void {
+  if (rolloutExitGroups.has(group)) {
+    return;
+  }
+  rolloutExitGroups.add(group);
+
+  const materials: RolloutExitAnim['materials'] = [];
+  group.traverse((child) => {
+    const material = (child as any).material;
+    const list = Array.isArray(material) ? material : material ? [material] : [];
+    for (const mat of list) {
+      if ('opacity' in mat) {
+        mat.transparent = true;
+        materials.push({ mat, opacity: mat.opacity ?? 1 });
+      }
+    }
+  });
+
+  rolloutExitAnims.push({
+    obj: group,
+    start: performance.now(),
+    dur: GRAPH.node.rolloutExitDuration,
+    materials,
+  });
+}
+
 /** Tick all pending deploy animations (call every frame). */
 export function tickAnimations(): void {
   const now = performance.now();
@@ -42,6 +78,22 @@ export function tickAnimations(): void {
     a.obj.scale.setScalar(1 - Math.pow(1 - t, 3));
     if (t >= 1) {
       pendingAnims.splice(i, 1);
+    }
+  }
+}
+
+export function tickRolloutAnimations(): void {
+  const now = performance.now();
+  for (let i = rolloutExitAnims.length - 1; i >= 0; i--) {
+    const anim = rolloutExitAnims[i];
+    const t = Math.min((now - anim.start) / anim.dur, 1);
+    const keep = Math.pow(1 - t, 2);
+    anim.obj.scale.setScalar(Math.max(0.01, keep));
+    for (const item of anim.materials) {
+      item.mat.opacity = item.opacity * keep;
+    }
+    if (t >= 1) {
+      rolloutExitAnims.splice(i, 1);
     }
   }
 }

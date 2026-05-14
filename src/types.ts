@@ -7,6 +7,8 @@ export interface ServiceNode {
   runtime?: 'docker' | 'kubernetes';
   kind?: 'container' | 'pod' | 'service' | 'ingress' | 'hpa';
   namespace?: string;
+  rolloutPhase?: 'terminating';
+  rolloutUntil?: number;
   containerId: string;
   image: string;
   status:

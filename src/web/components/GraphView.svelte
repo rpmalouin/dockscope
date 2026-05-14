@@ -9,9 +9,11 @@
   import { createClusteringForce, updateClusters, cleanupAllClusters } from '../lib/clustering';
   import {
     addDeployAnimation,
+    addRolloutExitAnimation,
     addStatusFlash,
     resetDeployIndex,
     tickAnimations,
+    tickRolloutAnimations,
     tickFlashAnimations,
     pulseWarningRings,
     orbitVolumeMoons,
@@ -252,7 +254,11 @@
       .nodeThreeObject((node: any) => {
         const imp = importanceMap.get(node.id) || 0;
         const group = buildNodeObject(node, imp, hasBrokenDependency(node.id), warningRings);
-        addDeployAnimation(node.id, group);
+        if (node.rolloutPhase === 'terminating') {
+          addRolloutExitAnimation(group);
+        } else {
+          addDeployAnimation(node.id, group);
+        }
         return group;
       })
       .nodeThreeObjectExtend(false)
@@ -315,6 +321,7 @@
     function loop() {
       updateClusters(g.scene(), g.graphData().nodes, isNodeVisible);
       tickAnimations();
+      tickRolloutAnimations();
       tickFlashAnimations();
       pulseWarningRings(warningRings);
       const nodes = g.graphData().nodes;
@@ -446,7 +453,9 @@
     graph.nodeThreeObject((node: any) => {
       const imp = importanceMap.get(node.id) || 0;
       const group = buildNodeObject(node, imp, hasBrokenDependency(node.id), warningRings);
-      if (isStructural) {
+      if (node.rolloutPhase === 'terminating') {
+        addRolloutExitAnimation(group);
+      } else if (isStructural) {
         addDeployAnimation(node.id, group);
       } else if (changedIds.has(node.id)) {
         const prevKey = oldStatusMap.get(node.id) || 'exited:none';

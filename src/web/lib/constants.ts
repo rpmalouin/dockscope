@@ -30,6 +30,7 @@ export const GRAPH = {
     labelOffset: 2,
     deployStagger: 70,
     deployDuration: 500,
+    rolloutExitDuration: 1400,
   },
   force: {
     charge: { strength: -65, distanceMax: 200 },
