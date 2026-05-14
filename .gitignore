@@ -4,3 +4,4 @@ dist/
 .env
 .DS_Store
 .vscode
+demo/kubernetes-rollout.yaml
