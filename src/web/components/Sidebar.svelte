@@ -21,6 +21,20 @@
   import SidebarAnomaly from './sidebar/SidebarAnomaly.svelte';
   import { getDockerState } from '../stores/docker.svelte';
   import type { ServiceNode, ContainerStats, ContainerInspect, MetricPoint } from '../../types';
+  import { apiErrorMessage, isAbortError } from '../lib/api';
+  import {
+    containerActionPastTense,
+    getHpaReplicaRange,
+    getKubernetesPodLogs,
+    kubernetesActionPastTense,
+    kubernetesRestartMessage,
+    loadDockerSidebarData,
+    removeContainer,
+    runContainerAction,
+    runKubernetesAction,
+    type ContainerUiAction,
+    type KubernetesUiAction,
+  } from '../lib/sidebarApi';
 
   const docker = getDockerState();
 
@@ -52,28 +66,24 @@
   } | null>(null);
   let isKubernetesNode = $derived(node?.runtime === 'kubernetes');
 
-  function kubernetesRestartMessage(node: ServiceNode): string {
-    if (node.kind === 'pod') {
-      return `Restart pod ${node.name}? Kubernetes will delete the current pod so its controller can recreate it.`;
-    }
-    return `Restart backing pods for ${node.fullName}? DockScope will delete the pods resolved from this ${node.kind}.`;
+  function toastActionFailure(prefix: string, error: unknown) {
+    const detail = apiErrorMessage(error);
+    addToast(detail ? `${prefix}: ${detail}` : prefix, 'error');
   }
 
-  async function doAction(action: string) {
+  async function doAction(action: ContainerUiAction) {
     if (!node || actionPending) {
       return;
     }
+    const target = node;
     actionPending = true;
     try {
-      const res = await fetch(`/api/containers/${node.containerId}/${action}`, { method: 'POST' });
-      if (!res.ok) {
-        const err = await res.json();
-        addToast(`Failed to ${action}: ${err.error}`, 'error');
-      } else {
-        addToast(`Container ${action}ed`, 'success');
+      await runContainerAction(target.containerId, action);
+      addToast(`Container ${containerActionPastTense(action)}`, 'success');
+    } catch (error) {
+      if (!isAbortError(error)) {
+        toastActionFailure(`Failed to ${action}`, error);
       }
-    } catch {
-      addToast(`Failed to ${action}`, 'error');
     } finally {
       actionPending = false;
     }
@@ -83,26 +93,20 @@
     if (!node || actionPending) {
       return;
     }
+    const target = node;
     actionPending = true;
     try {
-      const res = await fetch(`/api/containers/${node.containerId}?volumes=${withVolumes}`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        addToast(`Failed to remove: ${err.error}`, 'error');
-      } else {
-        addToast(`Container removed${withVolumes ? ' with volumes' : ''}`, 'success');
-        onClose();
+      await removeContainer(target.containerId, withVolumes);
+      addToast(`Container removed${withVolumes ? ' with volumes' : ''}`, 'success');
+      onClose();
+    } catch (error) {
+      if (!isAbortError(error)) {
+        toastActionFailure('Failed to remove', error);
       }
-    } catch {
-      addToast('Failed to remove', 'error');
     } finally {
       actionPending = false;
     }
   }
-
-  type KubernetesUiAction = 'delete' | 'restart' | 'set_hpa_constraints';
 
   async function doKubernetesAction(
     action: KubernetesUiAction,
@@ -112,29 +116,18 @@
     if (!targetNode || actionPending) {
       return;
     }
+    const target = targetNode;
     actionPending = true;
     try {
-      const res = await fetch('/api/kubernetes/action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: targetNode.containerId, action, ...options }),
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        addToast(`Failed to ${action}: ${err.error}`, 'error');
-      } else {
-        addToast(
-          `Kubernetes ${targetNode.kind} ${
-            action === 'restart' ? 'restarted' : action === 'delete' ? 'deleted' : 'updated'
-          }`,
-          'success',
-        );
-        if (action === 'delete') {
-          onClose();
-        }
+      await runKubernetesAction(target, action, options);
+      addToast(`Kubernetes ${target.kind} ${kubernetesActionPastTense(action)}`, 'success');
+      if (action === 'delete') {
+        onClose();
       }
-    } catch {
-      addToast(`Failed to ${action}`, 'error');
+    } catch (error) {
+      if (!isAbortError(error)) {
+        toastActionFailure(`Failed to ${action}`, error);
+      }
     } finally {
       actionPending = false;
     }
@@ -145,17 +138,6 @@
     confirmDialog = opts;
   }
 
-  function getHpaReplicaRange(node: ServiceNode): { min: number; max: number } {
-    const range = node.ports.find((port) => port.endsWith(' range'))?.replace(' range', '');
-    const [minRaw, maxRaw] = (range || '').split('-');
-    const min = parseInt(minRaw, 10);
-    const max = parseInt(maxRaw, 10);
-    return {
-      min: Number.isFinite(min) ? min : 1,
-      max: Number.isFinite(max) ? max : Math.max(Number.isFinite(min) ? min : 1, 1),
-    };
-  }
-
   function showHpaReplicaDialog(node: ServiceNode) {
     const current = getHpaReplicaRange(node);
     hpaDialog = { node, min: current.min, max: current.max };
@@ -163,82 +145,104 @@
 
   // Fetch stats + inspect + history when node changes
   $effect(() => {
-    if (!node) {
+    const currentNode = node;
+    if (!currentNode) {
+      stats = null;
+      inspect = null;
+      history = [];
+      kubernetesLogs = '';
+      showMore = false;
       return;
     }
-    if (isKubernetesNode && activeTab !== 'info') {
+    const isKubernetes = currentNode.runtime === 'kubernetes';
+    const tab = untrack(() => activeTab);
+    if (isKubernetes && tab !== 'info') {
       activeTab = 'info';
     }
     // Fall back to 'info' only if current tab isn't available for this node
     const runningTabs = ['top', 'exec'];
-    if (runningTabs.includes(activeTab) && node.status !== 'running' && node.status !== 'paused') {
+    if (
+      runningTabs.includes(tab) &&
+      currentNode.status !== 'running' &&
+      currentNode.status !== 'paused'
+    ) {
       activeTab = 'info';
     }
+    stats = null;
     inspect = null;
     history = [];
     kubernetesLogs = '';
     showMore = false;
 
-    if (isKubernetesNode) {
-      stats = null;
-      inspect = null;
-      return;
+    const controller = new AbortController();
+    if (isKubernetes) {
+      return () => controller.abort();
     }
 
-    if (node.status === 'running') {
-      fetch(`/api/containers/${node.containerId}/stats`)
-        .then((r) => r.json())
-        .then((d) => (stats = d))
-        .catch(() => (stats = null));
-      fetch(`/api/containers/${node.containerId}/history`)
-        .then((r) => r.json())
-        .then((d) => (history = d))
-        .catch(() => (history = []));
-    } else {
-      stats = null;
-      // Fetch crash diagnostic for non-running containers
-      if (!docker.diagnostics.has(node.id)) {
-        fetch(`/api/containers/${node.containerId}/diagnostic`)
-          .then((r) => r.json())
-          .then((d) => {
-            if (d) {
-              addDiagnostic(d);
-            }
-          })
-          .catch(() => {});
-      }
-    }
+    const loadDiagnostic = untrack(() => !docker.diagnostics.has(currentNode.id));
+    loadDockerSidebarData(currentNode, {
+      loadDiagnostic,
+      signal: controller.signal,
+    })
+      .then((data) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        stats = data.stats;
+        inspect = data.inspect;
+        history = data.history;
+        if (data.diagnostic) {
+          addDiagnostic(data.diagnostic);
+        }
+      })
+      .catch((error) => {
+        if (isAbortError(error) || controller.signal.aborted) {
+          return;
+        }
+        stats = null;
+        inspect = null;
+        history = [];
+      });
 
-    fetch(`/api/containers/${node.containerId}/inspect`)
-      .then((r) => r.json())
-      .then((d) => (inspect = d))
-      .catch(() => (inspect = null));
+    return () => controller.abort();
   });
 
   // Log streaming subscription
   $effect(() => {
     const tab = activeTab;
-    const n = node;
-    untrack(() => {
-      if (tab === 'logs' && n && n.runtime !== 'kubernetes') {
-        subscribeLogs(n.containerId);
+    const currentNode = node;
+    return untrack(() => {
+      const controller = new AbortController();
+      const shouldStreamDockerLogs =
+        tab === 'logs' && currentNode !== null && currentNode.runtime !== 'kubernetes';
+
+      if (shouldStreamDockerLogs) {
+        subscribeLogs(currentNode.containerId);
       } else {
         unsubscribeLogs();
       }
-      if (tab === 'logs' && n?.runtime === 'kubernetes' && n.kind === 'pod') {
-        fetch('/api/kubernetes/logs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: n.containerId, tail: 300 }),
-        })
-          .then((r) => r.json())
-          .then((d) => {
-            kubernetesLogs = d.logs || '';
+
+      if (tab === 'logs' && currentNode?.runtime === 'kubernetes' && currentNode.kind === 'pod') {
+        kubernetesLogs = '';
+        getKubernetesPodLogs(currentNode.containerId, 300, { signal: controller.signal })
+          .then((logs) => {
+            if (!controller.signal.aborted) {
+              kubernetesLogs = logs;
+            }
           })
-          .catch(() => {
-            kubernetesLogs = '';
+          .catch((error) => {
+            if (!isAbortError(error) && !controller.signal.aborted) {
+              kubernetesLogs = '';
+            }
           });
       }
+
+      return () => {
+        controller.abort();
+        if (shouldStreamDockerLogs) {
+          unsubscribeLogs();
+        }
+      };
     });
   });
 
