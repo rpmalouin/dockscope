@@ -47,12 +47,12 @@
   import {
     buildGraphSVG,
     captureCanvasPNG,
-    downloadBlob,
-    downloadText,
     snapshotFilename,
     type ProjectedLink,
     type ProjectedNode,
   } from '../lib/snapshot';
+  import { downloadBlob, downloadText } from '../lib/download';
+  import Icon from './Icon.svelte';
   import type { PositionedSimNode, SimLink, SimNode } from '../lib/simTypes';
 
   /** Material that stashes its pre-dim opacity for impact-mode restore */
@@ -668,29 +668,10 @@
 
   <div class="graph-controls">
     <button class="graph-ctrl-btn" title="Zoom to fit (F)" onclick={zoomToFit}>
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-      >
-        <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
-      </svg>
+      <Icon name="fit" size={16} />
     </button>
     <button class="graph-ctrl-btn" title="Reset camera (R)" onclick={resetCamera}>
-      <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-      >
-        <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-        <path d="M3 3v5h5" />
-      </svg>
+      <Icon name="restart" size={16} strokeWidth={2} />
     </button>
     {#if selectedNode}
       <button
@@ -698,17 +679,7 @@
         title="Focus selected (C)"
         onclick={() => centerOnNode(selectedNode!)}
       >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-        >
-          <circle cx="12" cy="12" r="3" />
-          <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
-        </svg>
+        <Icon name="focus" size={16} />
       </button>
       <button
         class="graph-ctrl-btn"
@@ -716,37 +687,12 @@
         title="Impact view (I)"
         onclick={toggleImpactMode}
       >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-        </svg>
+        <Icon name="impact" size={16} />
       </button>
     {/if}
     <span class="ctrl-divider"></span>
     <button class="graph-ctrl-btn" title="Export PNG snapshot" onclick={exportPNG}>
-      <svg
-        width="15"
-        height="15"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-      >
-        <path
-          d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"
-        />
-        <circle cx="12" cy="13" r="4" />
-      </svg>
+      <Icon name="camera" size={15} />
     </button>
     <button class="graph-ctrl-btn" title="Export SVG snapshot" onclick={exportSVG}>
       <span class="export-glyph">SVG</span>

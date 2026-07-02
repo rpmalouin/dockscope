@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { formatTime, formatGB } from '../lib/formatting';
   import { formatClock } from '../lib/recording';
+  import Icon from './Icon.svelte';
   import {
     getRecorderState,
     loadRecordingFile,
@@ -118,9 +119,7 @@
         </button>
         {#if recorder.recording && !recorder.isRecording}
           <button class="replay-again-btn" onclick={startReplay} title="Replay last recording">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
-              <polygon points="6,3 20,12 6,21" />
-            </svg>
+            <Icon name="play" size={10} />
           </button>
         {/if}
         {#if !recorder.isRecording}
@@ -129,20 +128,7 @@
             onclick={() => fileInput?.click()}
             title="Open a recording file for replay"
           >
-            <svg
-              width="11"
-              height="11"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="17 8 12 3 7 8" />
-              <line x1="12" y1="3" x2="12" y2="15" />
-            </svg>
+            <Icon name="upload" size={11} />
           </button>
           <input
             bind:this={fileInput}

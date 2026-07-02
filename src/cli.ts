@@ -1,12 +1,10 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { readFileSync } from 'fs';
-import { fileURLToPath } from 'url';
-import path from 'path';
 import { createConnection } from 'net';
 import { startServer } from './server/index.js';
 import { buildGraph, checkConnection, initDockerClient } from './docker/client.js';
+import { PKG_VERSION, fetchLatestVersion } from './version.js';
 
 function isPortInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -40,27 +38,11 @@ async function findAvailablePort(start: number): Promise<number> {
   return port;
 }
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(path.resolve(__dirname, '../package.json'), 'utf-8'));
-const VERSION = pkg.version;
+const VERSION = PKG_VERSION;
 
 async function checkForUpdate(): Promise<string | null> {
-  try {
-    const res = await fetch('https://registry.npmjs.org/dockscope/latest', {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!res.ok) {
-      return null;
-    }
-    const data = (await res.json()) as { version?: string };
-    const latest = data.version;
-    if (latest && latest !== VERSION) {
-      return latest;
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  const latest = await fetchLatestVersion();
+  return latest && latest !== VERSION ? latest : null;
 }
 
 const program = new Command();

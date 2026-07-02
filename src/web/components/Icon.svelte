@@ -4,9 +4,10 @@
   interface Props {
     name: IconName;
     size?: number;
+    strokeWidth?: number;
   }
 
-  let { name, size = 13 }: Props = $props();
+  let { name, size = 13, strokeWidth }: Props = $props();
   let icon = $derived<IconDef>(ICONS[name]);
 </script>
 
@@ -22,7 +23,7 @@
     viewBox="0 0 24 24"
     fill="none"
     stroke="currentColor"
-    stroke-width={icon.strokeWidth ?? 2.2}
+    stroke-width={strokeWidth ?? icon.strokeWidth ?? 2.2}
     stroke-linecap="round"
     stroke-linejoin="round"
   >

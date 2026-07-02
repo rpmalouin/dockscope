@@ -7,6 +7,7 @@
     togglePlay,
   } from '../stores/recorder.svelte';
   import { formatClock } from '../lib/recording';
+  import Icon from './Icon.svelte';
 
   const rec = getRecorderState();
 
@@ -38,19 +39,9 @@
       onclick={togglePlay}
     >
       {#if rec.playing}
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-          <rect x="5" y="4" width="4" height="16" rx="1" /><rect
-            x="15"
-            y="4"
-            width="4"
-            height="16"
-            rx="1"
-          />
-        </svg>
+        <Icon name="pause" size={12} />
       {:else}
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
-          <polygon points="6,3 20,12 6,21" />
-        </svg>
+        <Icon name="play" size={12} />
       {/if}
     </button>
 

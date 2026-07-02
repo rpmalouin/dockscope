@@ -1,4 +1,5 @@
 import type { GraphData, WSMessage } from '../../types';
+import { downloadText } from '../lib/download';
 import {
   MAX_RECORDING_FRAMES,
   RECORDABLE_TYPES,
@@ -103,13 +104,7 @@ export function stopRecording() {
 }
 
 function downloadRecording(rec: Recording) {
-  const blob = new Blob([JSON.stringify(rec)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = recordingFilename(rec.startedAt);
-  a.click();
-  URL.revokeObjectURL(url);
+  downloadText(JSON.stringify(rec), 'application/json', recordingFilename(rec.startedAt));
 }
 
 export async function loadRecordingFile(file: File): Promise<boolean> {

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getDockerState } from '../../stores/docker.svelte';
   import { ansiToHtml, highlightLogSearch } from '../../lib/ansi';
+  import { downloadText } from '../../lib/download';
 
   interface Props {
     logs?: string;
@@ -32,13 +33,11 @@
     if (!text) {
       return;
     }
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `logs-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadText(
+      text,
+      'text/plain',
+      `logs-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.txt`,
+    );
   }
 </script>
 
