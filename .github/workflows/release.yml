@@ -25,8 +25,7 @@ permissions:
   id-token: write
   packages: write
 
-# Never run two releases at once: they would race on the version bump,
-# npm publish, and the push back to main
+# Parallel releases would race on the version bump and publish
 concurrency:
   group: release
   cancel-in-progress: false
@@ -36,7 +35,7 @@ jobs:
     name: Version Bump & Publish
     runs-on: ubuntu-latest
     environment: npm
-    # Only run if the commit message doesn't already contain a version bump
+    # Skip the bot's own release commit so a release doesn't re-trigger itself
     if: "!contains(github.event.head_commit.message, 'chore: release')"
     steps:
       - uses: actions/checkout@v4
@@ -52,11 +51,10 @@ jobs:
 
       - run: npm ci
 
-      # Full quality gate before anything is published
       - name: Validate pushed commits
         run: |
           BEFORE="${{ github.event.before }}"
-          # workflow_dispatch, new branch, or force push: no usable "before" SHA
+          # "before" is unusable on workflow_dispatch, new branches and force pushes
           if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
             npx commitlint --from "$BEFORE" --to HEAD --verbose
           elif git rev-parse HEAD~1 >/dev/null 2>&1; then
@@ -68,8 +66,7 @@ jobs:
       - run: npm test
       - run: npm run build
 
-      # Determine version bump from commit messages
-      # feat: -> minor, fix: -> patch, BREAKING CHANGE -> major
+      # feat -> minor, BREAKING CHANGE -> major, anything else -> patch
       - name: Determine version bump
         id: bump
         run: |

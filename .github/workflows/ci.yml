@@ -25,14 +25,14 @@ jobs:
       - run: npm ci
       - name: Validate commits
         env:
-          # Passed via env, never inlined: commit messages are attacker-controlled
+          # env indirection prevents script injection via commit messages
           HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
           else
             BEFORE="${{ github.event.before }}"
-            # New branch or force push: the "before" SHA may not exist locally
+            # "before" is unusable on new branches and force pushes
             if [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
               npx commitlint --from "$BEFORE" --to HEAD --verbose
             elif git rev-parse HEAD~1 >/dev/null 2>&1; then
