@@ -12,6 +12,7 @@
     { key: 'R', desc: 'Reset camera' },
     { key: 'C', desc: 'Focus selected node' },
     { key: 'I', desc: 'Toggle impact view' },
+    { key: 'Space', desc: 'Play / pause replay' },
     { key: '?', desc: 'Toggle this help' },
   ];
 </script>

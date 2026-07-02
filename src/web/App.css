@@ -833,6 +833,18 @@ body {
   text-shadow: 0 0 12px var(--accent-cyan-glow);
 }
 
+.replay-note {
+  display: flex;
+  align-items: center;
+  padding: 12px 0;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #ff2b4e;
+  opacity: 0.75;
+}
+
 /* Sidebar: content */
 .sidebar-content {
   padding: 16px 20px;

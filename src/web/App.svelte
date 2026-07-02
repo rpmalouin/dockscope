@@ -7,7 +7,9 @@
   import KeyboardHelp from './components/KeyboardHelp.svelte';
   import ProjectManager from './components/ProjectManager.svelte';
   import HostManager from './components/HostManager.svelte';
+  import ReplayBar from './components/ReplayBar.svelte';
   import Toast from './components/Toast.svelte';
+  import { getRecorderState, togglePlay } from './stores/recorder.svelte';
   import { UI } from './lib/constants';
   import { buildScopeOptions, type StatusFilter } from './lib/graphFilters';
   import { resolveSelectedNode } from './lib/graphSelection';
@@ -15,6 +17,7 @@
 
   const DEFAULT_COLOR_NETWORKS = true;
   const docker = getDockerState();
+  const recorder = getRecorderState();
   let selectedNode = $state<ServiceNode | null>(null);
   let searchQuery = $state('');
   let statusFilter = $state<Set<StatusFilter>>(new Set());
@@ -81,7 +84,10 @@
       return;
     }
 
-    if (e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) {
+    if (e.key === ' ' && recorder.replaying) {
+      e.preventDefault();
+      togglePlay();
+    } else if (e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) {
       e.preventDefault();
       searchInput?.focus();
     } else if (e.key === 'f' || e.key === 'F') {
@@ -387,6 +393,9 @@
       onSelectContainer={(node) => (selectedNode = node)}
     />
   </div>
+
+  <!-- Replay timeline (visible while replaying a recording) -->
+  <ReplayBar />
 
   <!-- Toast notifications -->
   <Toast />

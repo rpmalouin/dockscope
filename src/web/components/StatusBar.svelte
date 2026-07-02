@@ -1,6 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { formatTime, formatGB } from '../lib/formatting';
+  import { formatClock } from '../lib/recording';
+  import {
+    getRecorderState,
+    loadRecordingFile,
+    startRecording,
+    startReplay,
+    stopRecording,
+  } from '../stores/recorder.svelte';
   import type { DockerEvent, GraphData, SystemInfo } from '../../types';
 
   import type { ServiceNode } from '../../types';
@@ -13,9 +21,21 @@
 
   let { events, graph, onSelectContainer }: Props = $props();
 
+  const recorder = getRecorderState();
+
   let sysInfo = $state<SystemInfo | null>(null);
 
   let hideHealthChecks = $state(true);
+  let fileInput = $state<HTMLInputElement | null>(null);
+
+  function onRecordingFilePicked(e: Event) {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    if (file) {
+      loadRecordingFile(file);
+    }
+    input.value = '';
+  }
 
   let running = $derived(graph.nodes.filter((n) => n.status === 'running').length);
   let stopped = $derived(graph.nodes.filter((n) => n.status !== 'running').length);
@@ -80,6 +100,60 @@
       {/if}
     </div>
     <div class="event-header-right">
+      {#if !recorder.replaying}
+        <button
+          class="rec-btn"
+          class:recording={recorder.isRecording}
+          onclick={() => (recorder.isRecording ? stopRecording() : startRecording())}
+          title={recorder.isRecording
+            ? 'Stop recording and save to file'
+            : 'Record session (graph, events, metrics)'}
+        >
+          <span class="rec-dot"></span>
+          {#if recorder.isRecording}
+            <span class="rec-time">{formatClock(recorder.recElapsed)}</span>
+          {:else}
+            REC
+          {/if}
+        </button>
+        {#if recorder.recording && !recorder.isRecording}
+          <button class="replay-again-btn" onclick={startReplay} title="Replay last recording">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="6,3 20,12 6,21" />
+            </svg>
+          </button>
+        {/if}
+        {#if !recorder.isRecording}
+          <button
+            class="load-rec-btn"
+            onclick={() => fileInput?.click()}
+            title="Open a recording file for replay"
+          >
+            <svg
+              width="11"
+              height="11"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+          </button>
+          <input
+            bind:this={fileInput}
+            type="file"
+            accept=".json,application/json"
+            onchange={onRecordingFilePicked}
+            hidden
+          />
+        {/if}
+        <span class="sys-info-divider"></span>
+      {/if}
       <button
         class="healthcheck-toggle"
         class:active={hideHealthChecks}
@@ -246,6 +320,74 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+  .rec-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.2s;
+    letter-spacing: 0.5px;
+  }
+  .rec-btn:hover {
+    border-color: rgba(255, 43, 78, 0.4);
+    color: var(--text-secondary);
+  }
+  .rec-btn .rec-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    flex-shrink: 0;
+  }
+  .rec-btn.recording {
+    color: #ff2b4e;
+    border-color: rgba(255, 43, 78, 0.4);
+    background: rgba(255, 43, 78, 0.08);
+  }
+  .rec-btn.recording .rec-dot {
+    background: #ff2b4e;
+    animation: rec-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes rec-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.25;
+    }
+  }
+  .rec-time {
+    min-width: 28px;
+  }
+  .replay-again-btn,
+  .load-rec-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 18px;
+    padding: 0;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .replay-again-btn:hover,
+  .load-rec-btn:hover {
+    color: var(--accent-cyan);
+    border-color: var(--border-glow);
   }
   .healthcheck-toggle {
     font-family: var(--font-mono);

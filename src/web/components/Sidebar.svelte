@@ -154,6 +154,16 @@
       showMore = false;
       return;
     }
+    // Replay mode shows historical node state — live inspect/stats/logs would contradict it
+    if (docker.replayMode) {
+      stats = null;
+      inspect = null;
+      history = [];
+      kubernetesLogs = '';
+      showMore = false;
+      activeTab = 'info';
+      return;
+    }
     const isKubernetes = currentNode.runtime === 'kubernetes';
     const tab = untrack(() => activeTab);
     if (isKubernetes && tab !== 'info') {
@@ -214,10 +224,11 @@
     const containerId = currentNode?.containerId ?? null;
     const runtime = currentNode?.runtime;
     const kind = currentNode?.kind;
+    const replayActive = docker.replayMode;
     return untrack(() => {
       const controller = new AbortController();
       const shouldStreamDockerLogs =
-        tab === 'logs' && containerId !== null && runtime !== 'kubernetes';
+        tab === 'logs' && containerId !== null && runtime !== 'kubernetes' && !replayActive;
 
       if (shouldStreamDockerLogs) {
         subscribeLogs(containerId);
@@ -225,7 +236,13 @@
         unsubscribeLogs();
       }
 
-      if (tab === 'logs' && runtime === 'kubernetes' && kind === 'pod' && containerId) {
+      if (
+        tab === 'logs' &&
+        runtime === 'kubernetes' &&
+        kind === 'pod' &&
+        containerId &&
+        !replayActive
+      ) {
         kubernetesLogs = '';
         getKubernetesPodLogs(containerId, 300, { signal: controller.signal })
           .then((logs) => {
@@ -286,150 +303,152 @@
         <h3>{node.name}</h3>
       </div>
       <div class="header-right">
-        {#if isKubernetesNode}
+        {#if !docker.replayMode}
+          {#if isKubernetesNode}
+            <button
+              class="act-icon"
+              class:spinning={actionPending}
+              title="Restart backing pods"
+              onclick={() =>
+                confirm({
+                  title: node.kind === 'pod' ? 'Restart Pod' : 'Restart Backing Pods',
+                  message: kubernetesRestartMessage(node),
+                  confirmLabel: 'Restart',
+                  variant: 'warning',
+                  action: () => doKubernetesAction('restart'),
+                })}
+              disabled={actionPending}
+            >
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+              </svg>
+            </button>
+          {:else if !isKubernetesNode && node.status === 'running'}
+            <button
+              class="act-icon warning"
+              title="Pause"
+              onclick={() => doAction('pause')}
+              disabled={actionPending}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"
+                ><rect x="5" y="4" width="4" height="16" rx="1" /><rect
+                  x="15"
+                  y="4"
+                  width="4"
+                  height="16"
+                  rx="1"
+                /></svg
+              >
+            </button>
+            <button
+              class="act-icon"
+              class:spinning={actionPending}
+              title="Restart"
+              onclick={() => doAction('restart')}
+              disabled={actionPending}
+            >
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+              </svg>
+            </button>
+            <button
+              class="act-icon danger"
+              title="Stop"
+              onclick={() =>
+                confirm({
+                  title: 'Stop Container',
+                  message: `Stop ${node.name}? The container will be gracefully terminated.`,
+                  confirmLabel: 'Stop',
+                  variant: 'warning',
+                  action: () => doAction('stop'),
+                })}
+              disabled={actionPending}
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"
+                ><rect x="4" y="4" width="16" height="16" rx="2" /></svg
+              >
+            </button>
+          {:else if !isKubernetesNode && node.status === 'paused'}
+            <button
+              class="act-icon success"
+              title="Unpause"
+              onclick={() => doAction('unpause')}
+              disabled={actionPending}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
+                ><polygon points="6,3 20,12 6,21" /></svg
+              >
+            </button>
+            <button
+              class="act-icon"
+              class:spinning={actionPending}
+              title="Restart"
+              onclick={() => doAction('restart')}
+              disabled={actionPending}
+            >
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+              </svg>
+            </button>
+          {:else if !isKubernetesNode}
+            <button
+              class="act-icon success"
+              title="Start"
+              onclick={() => doAction('start')}
+              disabled={actionPending}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
+                ><polygon points="6,3 20,12 6,21" /></svg
+              >
+            </button>
+          {/if}
+
+          <!-- More actions trigger -->
           <button
             class="act-icon"
-            class:spinning={actionPending}
-            title="Restart backing pods"
-            onclick={() =>
-              confirm({
-                title: node.kind === 'pod' ? 'Restart Pod' : 'Restart Backing Pods',
-                message: kubernetesRestartMessage(node),
-                confirmLabel: 'Restart',
-                variant: 'warning',
-                action: () => doKubernetesAction('restart'),
-              })}
+            title="More actions"
+            onclick={(e) => {
+              moreBtn = e.currentTarget as HTMLElement;
+              showMore = !showMore;
+            }}
             disabled={actionPending}
           >
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-            </svg>
-          </button>
-        {:else if !isKubernetesNode && node.status === 'running'}
-          <button
-            class="act-icon warning"
-            title="Pause"
-            onclick={() => doAction('pause')}
-            disabled={actionPending}
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"
-              ><rect x="5" y="4" width="4" height="16" rx="1" /><rect
-                x="15"
-                y="4"
-                width="4"
-                height="16"
-                rx="1"
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
+              ><circle cx="12" cy="5" r="2" /><circle cx="12" cy="12" r="2" /><circle
+                cx="12"
+                cy="19"
+                r="2"
               /></svg
             >
           </button>
-          <button
-            class="act-icon"
-            class:spinning={actionPending}
-            title="Restart"
-            onclick={() => doAction('restart')}
-            disabled={actionPending}
-          >
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-            </svg>
-          </button>
-          <button
-            class="act-icon danger"
-            title="Stop"
-            onclick={() =>
-              confirm({
-                title: 'Stop Container',
-                message: `Stop ${node.name}? The container will be gracefully terminated.`,
-                confirmLabel: 'Stop',
-                variant: 'warning',
-                action: () => doAction('stop'),
-              })}
-            disabled={actionPending}
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"
-              ><rect x="4" y="4" width="16" height="16" rx="2" /></svg
-            >
-          </button>
-        {:else if !isKubernetesNode && node.status === 'paused'}
-          <button
-            class="act-icon success"
-            title="Unpause"
-            onclick={() => doAction('unpause')}
-            disabled={actionPending}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
-              ><polygon points="6,3 20,12 6,21" /></svg
-            >
-          </button>
-          <button
-            class="act-icon"
-            class:spinning={actionPending}
-            title="Restart"
-            onclick={() => doAction('restart')}
-            disabled={actionPending}
-          >
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-            </svg>
-          </button>
-        {:else if !isKubernetesNode}
-          <button
-            class="act-icon success"
-            title="Start"
-            onclick={() => doAction('start')}
-            disabled={actionPending}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
-              ><polygon points="6,3 20,12 6,21" /></svg
-            >
-          </button>
         {/if}
-
-        <!-- More actions trigger -->
-        <button
-          class="act-icon"
-          title="More actions"
-          onclick={(e) => {
-            moreBtn = e.currentTarget as HTMLElement;
-            showMore = !showMore;
-          }}
-          disabled={actionPending}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
-            ><circle cx="12" cy="5" r="2" /><circle cx="12" cy="12" r="2" /><circle
-              cx="12"
-              cy="19"
-              r="2"
-            /></svg
-          >
-        </button>
 
         <span class="header-sep"></span>
         <button class="close-btn" onclick={onClose}>&times;</button>
@@ -441,38 +460,42 @@
         class="tab {activeTab === 'info' ? 'active' : ''}"
         onclick={() => (activeTab = 'info')}>Info</button
       >
-      {#if !isKubernetesNode}
-        <button
-          class="tab {activeTab === 'env' ? 'active' : ''}"
-          onclick={() => (activeTab = 'env')}>Env</button
-        >
-        <button
-          class="tab {activeTab === 'logs' ? 'active' : ''}"
-          onclick={() => (activeTab = 'logs')}>Logs</button
-        >
-      {:else if node.kind === 'pod'}
-        <button
-          class="tab {activeTab === 'logs' ? 'active' : ''}"
-          onclick={() => (activeTab = 'logs')}>Logs</button
-        >
-      {/if}
-      {#if !isKubernetesNode && (node.status === 'running' || node.status === 'paused')}
-        <button
-          class="tab {activeTab === 'top' ? 'active' : ''}"
-          onclick={() => (activeTab = 'top')}>Top</button
-        >
-      {/if}
-      {#if !isKubernetesNode}
-        <button
-          class="tab {activeTab === 'diff' ? 'active' : ''}"
-          onclick={() => (activeTab = 'diff')}>Diff</button
-        >
-      {/if}
-      {#if !isKubernetesNode && node.status === 'running'}
-        <button
-          class="tab {activeTab === 'exec' ? 'active' : ''}"
-          onclick={() => (activeTab = 'exec')}>Exec</button
-        >
+      {#if docker.replayMode}
+        <span class="replay-note">Historical view — live tabs disabled</span>
+      {:else}
+        {#if !isKubernetesNode}
+          <button
+            class="tab {activeTab === 'env' ? 'active' : ''}"
+            onclick={() => (activeTab = 'env')}>Env</button
+          >
+          <button
+            class="tab {activeTab === 'logs' ? 'active' : ''}"
+            onclick={() => (activeTab = 'logs')}>Logs</button
+          >
+        {:else if node.kind === 'pod'}
+          <button
+            class="tab {activeTab === 'logs' ? 'active' : ''}"
+            onclick={() => (activeTab = 'logs')}>Logs</button
+          >
+        {/if}
+        {#if !isKubernetesNode && (node.status === 'running' || node.status === 'paused')}
+          <button
+            class="tab {activeTab === 'top' ? 'active' : ''}"
+            onclick={() => (activeTab = 'top')}>Top</button
+          >
+        {/if}
+        {#if !isKubernetesNode}
+          <button
+            class="tab {activeTab === 'diff' ? 'active' : ''}"
+            onclick={() => (activeTab = 'diff')}>Diff</button
+          >
+        {/if}
+        {#if !isKubernetesNode && node.status === 'running'}
+          <button
+            class="tab {activeTab === 'exec' ? 'active' : ''}"
+            onclick={() => (activeTab = 'exec')}>Exec</button
+          >
+        {/if}
       {/if}
     </div>
 
