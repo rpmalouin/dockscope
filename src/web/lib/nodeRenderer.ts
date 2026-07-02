@@ -1,4 +1,19 @@
-import * as THREE from 'three';
+import {
+  BoxGeometry,
+  CanvasTexture,
+  Group,
+  Mesh,
+  MeshBasicMaterial,
+  MeshPhongMaterial,
+  SphereGeometry,
+  Sprite,
+  SpriteMaterial,
+  TetrahedronGeometry,
+  type BufferGeometry,
+  type Material,
+  type Object3D,
+  type Texture,
+} from 'three';
 import SpriteText from 'three-spritetext';
 import { GRAPH } from './constants';
 
@@ -6,21 +21,21 @@ const NC = GRAPH.node;
 
 /** Typed metadata stored on each node's Three.js group */
 export interface NodeMeta {
-  coreMat: THREE.MeshPhongMaterial;
+  coreMat: MeshPhongMaterial;
   baseEmissive: number;
   radius: number;
-  label: THREE.Sprite;
+  label: Sprite;
   labelOffset: number;
-  anomalySprite: THREE.Sprite | null;
-  warningRing: THREE.Sprite | null;
-  moons: THREE.Mesh[];
+  anomalySprite: Sprite | null;
+  warningRing: Sprite | null;
+  moons: Mesh[];
   orbitRadius: number;
   moonCount: number;
   orbitPhase: number;
 }
 
 /** Access typed metadata from a node's Three.js group */
-export function getMeta(group: THREE.Group): NodeMeta | null {
+export function getMeta(group: Group): NodeMeta | null {
   return (group as any).__meta ?? null;
 }
 
@@ -60,7 +75,7 @@ function createRingSprite(
   innerRadius: number,
   outerRadius: number,
   opacity: number,
-): THREE.Sprite {
+): Sprite {
   const size = Math.ceil(outerRadius * 2 + 4);
   const canvas = document.createElement('canvas');
   canvas.width = size * 4;
@@ -76,15 +91,15 @@ function createRingSprite(
   ctx.fillStyle = color;
   ctx.fill();
 
-  const texture = new THREE.CanvasTexture(canvas);
+  const texture = new CanvasTexture(canvas);
   texture.needsUpdate = true;
-  const mat = new THREE.SpriteMaterial({
+  const mat = new SpriteMaterial({
     map: texture,
     transparent: true,
     opacity,
     depthWrite: false,
   });
-  const sprite = new THREE.Sprite(mat);
+  const sprite = new Sprite(mat);
   sprite.scale.set(size, size, 1);
   return sprite;
 }
@@ -93,9 +108,9 @@ export function buildNodeObject(
   node: any,
   importance: number,
   hasBrokenDep: boolean,
-  warningRings: THREE.Sprite[],
-): THREE.Group {
-  const group = new THREE.Group();
+  warningRings: Sprite[],
+): Group {
+  const group = new Group();
   const color = getNodeColor(node);
   const isRunning = node.status === 'running';
   const isKubernetes = node.runtime === 'kubernetes';
@@ -107,19 +122,19 @@ export function buildNodeObject(
   // Core primitive
   const geo =
     isKubernetes && node.kind === 'service'
-      ? new THREE.BoxGeometry(radius * 1.5, radius * 1.5, radius * 1.5)
+      ? new BoxGeometry(radius * 1.5, radius * 1.5, radius * 1.5)
       : isKubernetes && node.kind === 'hpa'
-        ? new THREE.TetrahedronGeometry(radius * 1.35, 0)
-        : new THREE.SphereGeometry(radius, NC.sphereSegments.w, NC.sphereSegments.h);
+        ? new TetrahedronGeometry(radius * 1.35, 0)
+        : new SphereGeometry(radius, NC.sphereSegments.w, NC.sphereSegments.h);
   const baseEmissive = isRunning ? 0.25 + importance * 0.3 : 0.1;
-  const coreMat = new THREE.MeshPhongMaterial({
+  const coreMat = new MeshPhongMaterial({
     color,
     emissive: color,
     emissiveIntensity: baseEmissive,
     transparent: true,
     opacity: isRunning ? 0.88 : 0.4,
   });
-  group.add(new THREE.Mesh(geo, coreMat));
+  group.add(new Mesh(geo, coreMat));
 
   // Glow ring
   let ringOuterEdge = radius;
@@ -131,7 +146,7 @@ export function buildNodeObject(
   }
 
   // Warning ring
-  let warningRing: THREE.Sprite | null = null;
+  let warningRing: Sprite | null = null;
   if (isRunning && hasBrokenDep) {
     warningRing = createRingSprite('#ff8a2b', radius + 3.5, radius + 5.5, 0.25);
     ringOuterEdge = Math.max(ringOuterEdge, radius + 5.5);
@@ -140,19 +155,19 @@ export function buildNodeObject(
   }
 
   // Volume moons
-  const moons: THREE.Mesh[] = [];
+  const moons: Mesh[] = [];
   const volCount = node.volumeCount || 0;
   const moonCount = Math.min(volCount, 5);
   const orbitRadius = radius + 4;
   if (moonCount > 0) {
-    const moonGeo = new THREE.SphereGeometry(0.5, 8, 6);
-    const moonMat = new THREE.MeshBasicMaterial({
+    const moonGeo = new SphereGeometry(0.5, 8, 6);
+    const moonMat = new MeshBasicMaterial({
       color: '#a855f7',
       transparent: true,
       opacity: 0.6,
     });
     for (let i = 0; i < moonCount; i++) {
-      const moon = new THREE.Mesh(moonGeo, moonMat);
+      const moon = new Mesh(moonGeo, moonMat);
       const angle = (2 * Math.PI * i) / moonCount;
       moon.position.set(Math.cos(angle) * orbitRadius, 0, Math.sin(angle) * orbitRadius);
       group.add(moon);
@@ -161,7 +176,7 @@ export function buildNodeObject(
   }
 
   // Anomaly indicator
-  let anomalySprite: THREE.Sprite | null = null;
+  let anomalySprite: Sprite | null = null;
   if (isRunning) {
     const sprite = new SpriteText('!');
     sprite.color = '#ffcc00';
@@ -172,7 +187,7 @@ export function buildNodeObject(
     sprite.padding = 1.5;
     sprite.borderRadius = 2;
     sprite.position.set(radius + 3, radius + 3, 0);
-    (sprite.material as THREE.SpriteMaterial).depthWrite = false;
+    (sprite.material as SpriteMaterial).depthWrite = false;
     sprite.visible = false;
     group.add(sprite);
     anomalySprite = sprite;
@@ -189,7 +204,7 @@ export function buildNodeObject(
   label.borderRadius = 1.5;
   const labelOffset = ringOuterEdge + NC.labelOffset;
   label.position.set(0, labelOffset, 0);
-  (label.material as THREE.SpriteMaterial).depthWrite = false;
+  (label.material as SpriteMaterial).depthWrite = false;
   group.add(label);
 
   // Store typed metadata
@@ -211,25 +226,25 @@ export function buildNodeObject(
   return group;
 }
 
-function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
+function disposeMaterial(material: Material | Material[]): void {
   if (Array.isArray(material)) {
     for (const item of material) {
       disposeMaterial(item);
     }
     return;
   }
-  const map = (material as THREE.Material & { map?: THREE.Texture }).map;
+  const map = (material as Material & { map?: Texture }).map;
   map?.dispose();
   material.dispose();
 }
 
-function disposeObject(obj: THREE.Object3D): void {
+function disposeObject(obj: Object3D): void {
   for (const child of [...obj.children]) {
     disposeObject(child);
   }
-  const mesh = obj as THREE.Object3D & {
-    geometry?: THREE.BufferGeometry;
-    material?: THREE.Material | THREE.Material[];
+  const mesh = obj as Object3D & {
+    geometry?: BufferGeometry;
+    material?: Material | Material[];
   };
   mesh.geometry?.dispose();
   if (mesh.material) {
@@ -238,11 +253,11 @@ function disposeObject(obj: THREE.Object3D): void {
 }
 
 export function refreshNodeObject(
-  group: THREE.Group,
+  group: Group,
   node: any,
   importance: number,
   hasBrokenDep: boolean,
-  warningRings: THREE.Sprite[],
+  warningRings: Sprite[],
 ): void {
   const replacement = buildNodeObject(node, importance, hasBrokenDep, warningRings);
   for (const child of [...group.children]) {

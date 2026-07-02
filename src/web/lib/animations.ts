@@ -1,9 +1,17 @@
-import * as THREE from 'three';
+import {
+  Color,
+  Vector3,
+  type Camera,
+  type Group,
+  type Material,
+  type Sprite,
+  type SpriteMaterial,
+} from 'three';
 import { GRAPH } from './constants';
 import { getMeta } from './nodeRenderer';
 
 interface PendingAnim {
-  obj: THREE.Group;
+  obj: Group;
   start: number;
   dur: number;
 }
@@ -17,7 +25,7 @@ export function resetDeployIndex(): void {
   deployIndex = 0;
 }
 
-export function addDeployAnimation(nodeId: string, group: THREE.Group): void {
+export function addDeployAnimation(nodeId: string, group: Group): void {
   if (animatedNodes.has(nodeId)) {
     return;
   }
@@ -34,16 +42,16 @@ export function addDeployAnimation(nodeId: string, group: THREE.Group): void {
 }
 
 interface RolloutExitAnim {
-  obj: THREE.Group;
+  obj: Group;
   start: number;
   dur: number;
-  materials: { mat: THREE.Material & { opacity?: number }; opacity: number }[];
+  materials: { mat: Material & { opacity?: number }; opacity: number }[];
 }
 
 const rolloutExitAnims: RolloutExitAnim[] = [];
-const rolloutExitGroups = new WeakSet<THREE.Group>();
+const rolloutExitGroups = new WeakSet<Group>();
 
-export function addRolloutExitAnimation(group: THREE.Group): void {
+export function addRolloutExitAnimation(group: Group): void {
   if (rolloutExitGroups.has(group)) {
     return;
   }
@@ -100,12 +108,12 @@ export function tickRolloutAnimations(): void {
 
 /** State change animation — direction-aware scale + emissive pulse. */
 interface FlashAnim {
-  group: THREE.Group;
+  group: Group;
   start: number;
   baseEmissive: number;
   startScale: number;
-  startColor: THREE.Color;
-  endColor: THREE.Color;
+  startColor: Color;
+  endColor: Color;
 }
 
 const flashAnims: FlashAnim[] = [];
@@ -116,7 +124,7 @@ const BASE_RADIUS = GRAPH.node.baseRadius;
 
 /** Animate transition between states with scale + color interpolation. */
 export function addStatusFlash(
-  group: THREE.Group,
+  group: Group,
   prevStatus: string,
   curStatus: string,
   prevColor: string,
@@ -129,7 +137,7 @@ export function addStatusFlash(
   const prevRadius = ACTIVE_STATES.has(prevStatus) ? BASE_RADIUS.running : BASE_RADIUS.stopped;
   const curRadius = ACTIVE_STATES.has(curStatus) ? BASE_RADIUS.running : BASE_RADIUS.stopped;
   const startScale = prevRadius / curRadius;
-  const startColor = new THREE.Color(prevColor);
+  const startColor = new Color(prevColor);
   const endColor = meta.coreMat.color.clone();
 
   // Start from previous visual state
@@ -172,10 +180,10 @@ export function tickFlashAnimations(): void {
 }
 
 /** Pulse warning ring sprite opacities (call every frame). */
-export function pulseWarningRings(rings: THREE.Sprite[]): void {
+export function pulseWarningRings(rings: Sprite[]): void {
   const pulse = 0.12 + Math.sin(performance.now() * 0.004) * 0.12;
   for (const ring of rings) {
-    (ring.material as THREE.SpriteMaterial).opacity = pulse;
+    (ring.material as SpriteMaterial).opacity = pulse;
   }
 }
 
@@ -190,15 +198,15 @@ export function updateAnomalyIndicators(nodes: any[], anomalyIds: Set<string>): 
     const hasAnomaly = anomalyIds.has(node.id);
     meta.anomalySprite.visible = hasAnomaly;
     if (hasAnomaly) {
-      (meta.anomalySprite.material as THREE.SpriteMaterial).opacity = pulse;
+      (meta.anomalySprite.material as SpriteMaterial).opacity = pulse;
     }
   }
 }
 
 /** Reposition labels and anomaly indicators in the camera's view plane. */
-export function updateBillboardPositions(nodes: any[], camera: THREE.Camera): void {
-  const up = new THREE.Vector3();
-  const right = new THREE.Vector3();
+export function updateBillboardPositions(nodes: any[], camera: Camera): void {
+  const up = new Vector3();
+  const right = new Vector3();
   right.setFromMatrixColumn(camera.matrixWorld, 0);
   up.setFromMatrixColumn(camera.matrixWorld, 1);
 
@@ -225,10 +233,10 @@ export function updateBillboardPositions(nodes: any[], camera: THREE.Camera): vo
 }
 
 /** Orbit volume moons in the camera's view plane. */
-const _right = new THREE.Vector3();
-const _up = new THREE.Vector3();
+const _right = new Vector3();
+const _up = new Vector3();
 
-export function orbitVolumeMoons(nodes: any[], camera: THREE.Camera): void {
+export function orbitVolumeMoons(nodes: any[], camera: Camera): void {
   const t = performance.now() * 0.00005;
   _right.setFromMatrixColumn(camera.matrixWorld, 0);
   _up.setFromMatrixColumn(camera.matrixWorld, 1);

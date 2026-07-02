@@ -1,13 +1,21 @@
-import * as THREE from 'three';
+import {
+  BackSide,
+  Mesh,
+  MeshBasicMaterial,
+  SphereGeometry,
+  type Material,
+  type Scene,
+  type SpriteMaterial,
+} from 'three';
 import SpriteText from 'three-spritetext';
 import { PROJECT_PALETTE, HOST_PALETTE } from './constants';
 
 interface ClusterVisual {
-  mesh: THREE.Mesh;
+  mesh: Mesh;
   label: SpriteText;
 }
 
-const sharedGeo = new THREE.SphereGeometry(1, 20, 14);
+const sharedGeo = new SphereGeometry(1, 20, 14);
 const clusterMap = new Map<string, ClusterVisual>();
 const hostClusterMap = new Map<string, ClusterVisual>();
 
@@ -86,15 +94,15 @@ export function createClusteringForce(strength: number) {
   return force;
 }
 
-function createClusterMesh(color: string): THREE.Mesh {
-  const mat = new THREE.MeshBasicMaterial({
+function createClusterMesh(color: string): Mesh {
+  const mat = new MeshBasicMaterial({
     color,
     transparent: true,
     opacity: 0.035,
     depthWrite: false,
-    side: THREE.BackSide,
+    side: BackSide,
   });
-  const mesh = new THREE.Mesh(sharedGeo, mat);
+  const mesh = new Mesh(sharedGeo, mat);
   mesh.renderOrder = -1;
   return mesh;
 }
@@ -107,24 +115,24 @@ function createClusterLabel(name: string, color: string): SpriteText {
   label.fontWeight = '600';
   label.backgroundColor = false as any;
   label.padding = 0;
-  (label.material as THREE.SpriteMaterial).depthWrite = false;
-  (label.material as THREE.SpriteMaterial).opacity = 0.5;
+  (label.material as SpriteMaterial).depthWrite = false;
+  (label.material as SpriteMaterial).opacity = 0.5;
   return label;
 }
 
-function removeFromMap(scene: THREE.Scene, map: Map<string, ClusterVisual>, name: string): void {
+function removeFromMap(scene: Scene, map: Map<string, ClusterVisual>, name: string): void {
   const cluster = map.get(name);
   if (!cluster) {
     return;
   }
   scene.remove(cluster.mesh);
   scene.remove(cluster.label);
-  (cluster.mesh.material as THREE.Material).dispose();
+  (cluster.mesh.material as Material).dispose();
   map.delete(name);
 }
 
 export function updateClusters(
-  scene: THREE.Scene,
+  scene: Scene,
   nodes: any[],
   isVisible: (node: any) => boolean,
 ): void {
@@ -252,10 +260,10 @@ export function updateClusters(
       if (!cluster) {
         const mesh = createClusterMesh(color);
         mesh.renderOrder = -2; // Behind project clusters
-        (mesh.material as THREE.MeshBasicMaterial).opacity = 0.02;
+        (mesh.material as MeshBasicMaterial).opacity = 0.02;
         const label = createClusterLabel(hostName, color);
         label.textHeight = 4;
-        (label.material as THREE.SpriteMaterial).opacity = 0.6;
+        (label.material as SpriteMaterial).opacity = 0.6;
         scene.add(mesh);
         scene.add(label);
         cluster = { mesh, label };
@@ -276,7 +284,7 @@ export function updateClusters(
   }
 }
 
-export function cleanupAllClusters(scene: THREE.Scene): void {
+export function cleanupAllClusters(scene: Scene): void {
   for (const [name] of clusterMap) {
     removeFromMap(scene, clusterMap, name);
   }

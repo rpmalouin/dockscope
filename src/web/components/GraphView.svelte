@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import ForceGraph3D, { type ForceGraph3DInstance } from '3d-force-graph';
-  import * as THREE from 'three';
+  import type { Group, Sprite } from 'three';
   import type { GraphData, ServiceNode } from '../../types';
   import { GRAPH } from '../lib/constants';
   import { computeImportance } from '../lib/importance';
@@ -84,7 +84,7 @@
   });
 
   // --- Warning rings (shared with animation system) ---
-  const warningRings: THREE.Sprite[] = [];
+  const warningRings: Sprite[] = [];
 
   function syncWarningRingsFromGraph() {
     if (!graph) {
@@ -406,7 +406,7 @@
       if (diff.addedNodeIds.has(node.id) || !nodesToRefresh.has(node.id)) {
         continue;
       }
-      const group = (node as any).__threeObj as THREE.Group | undefined;
+      const group = (node as any).__threeObj as Group | undefined;
       if (!group) {
         continue;
       }

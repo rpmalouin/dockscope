@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { Terminal } from '@xterm/xterm';
-  import { FitAddon } from '@xterm/addon-fit';
+  import type { Terminal } from '@xterm/xterm';
+  import type { FitAddon } from '@xterm/addon-fit';
   import '@xterm/xterm/css/xterm.css';
+
   interface Props {
     containerId: string;
   }
@@ -15,6 +16,7 @@
   let ws: WebSocket | null = null;
   let connected = $state(false);
   let connecting = $state(false);
+  let terminalLoading = $state(false);
 
   function isSocketActive(socket: WebSocket | null): boolean {
     return socket?.readyState === WebSocket.CONNECTING || socket?.readyState === WebSocket.OPEN;
@@ -84,56 +86,77 @@
   }
 
   onMount(() => {
-    terminal = new Terminal({
-      cursorBlink: true,
-      fontSize: 12,
-      fontFamily: "'Fira Code', monospace",
-      theme: {
-        background: '#04040e',
-        foreground: '#e2e8f0',
-        cursor: '#00e4ff',
-        selectionBackground: '#00e4ff33',
-        black: '#0a0a1a',
-        red: '#ff2b4e',
-        green: '#00ff6a',
-        yellow: '#ff8a2b',
-        blue: '#00a0ff',
-        magenta: '#a855f7',
-        cyan: '#00e4ff',
-        white: '#e2e8f0',
-        brightBlack: '#3e4a5c',
-        brightRed: '#ff5c7a',
-        brightGreen: '#44ff8e',
-        brightYellow: '#ffaa55',
-        brightBlue: '#44bbff',
-        brightMagenta: '#c084fc',
-        brightCyan: '#44eeff',
-        brightWhite: '#f8fafc',
-      },
-    });
+    let observer: ResizeObserver | null = null;
+    let disposed = false;
+    terminalLoading = true;
 
-    fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.open(termEl);
-    fitAddon.fit();
-
-    // Send keyboard input to the exec stream
-    terminal.onData((data) => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'exec_input', data: { text: data } }));
+    async function initTerminal() {
+      const [{ Terminal }, { FitAddon }] = await Promise.all([
+        import('@xterm/xterm'),
+        import('@xterm/addon-fit'),
+      ]);
+      if (disposed) {
+        return;
       }
-    });
 
-    // Handle resize
-    const observer = new ResizeObserver(() => {
-      fitAddon?.fit();
-    });
-    observer.observe(termEl);
+      terminal = new Terminal({
+        cursorBlink: true,
+        fontSize: 12,
+        fontFamily: "'Fira Code', monospace",
+        theme: {
+          background: '#04040e',
+          foreground: '#e2e8f0',
+          cursor: '#00e4ff',
+          selectionBackground: '#00e4ff33',
+          black: '#0a0a1a',
+          red: '#ff2b4e',
+          green: '#00ff6a',
+          yellow: '#ff8a2b',
+          blue: '#00a0ff',
+          magenta: '#a855f7',
+          cyan: '#00e4ff',
+          white: '#e2e8f0',
+          brightBlack: '#3e4a5c',
+          brightRed: '#ff5c7a',
+          brightGreen: '#44ff8e',
+          brightYellow: '#ffaa55',
+          brightBlue: '#44bbff',
+          brightMagenta: '#c084fc',
+          brightCyan: '#44eeff',
+          brightWhite: '#f8fafc',
+        },
+      });
 
-    connect();
+      fitAddon = new FitAddon();
+      terminal.loadAddon(fitAddon);
+      terminal.open(termEl);
+      fitAddon.fit();
+
+      // Send keyboard input to the exec stream
+      terminal.onData((data) => {
+        if (ws?.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'exec_input', data: { text: data } }));
+        }
+      });
+
+      // Handle resize
+      observer = new ResizeObserver(() => {
+        fitAddon?.fit();
+      });
+      observer.observe(termEl);
+
+      terminalLoading = false;
+      connect();
+    }
+
+    initTerminal().catch(() => {
+      terminalLoading = false;
+      terminal?.write('\r\n\x1b[31m[failed to load terminal]\x1b[0m\r\n');
+    });
 
     return () => {
-      observer.disconnect();
+      disposed = true;
+      observer?.disconnect();
       disconnect();
       terminal?.dispose();
     };
@@ -162,8 +185,8 @@
     {#if connected}
       <button class="exec-btn" onclick={disconnect}>Disconnect</button>
     {:else}
-      <button class="exec-btn" onclick={connect} disabled={connecting}>
-        {connecting ? 'Connecting' : 'Reconnect'}
+      <button class="exec-btn" onclick={connect} disabled={connecting || terminalLoading}>
+        {terminalLoading ? 'Loading' : connecting ? 'Connecting' : 'Reconnect'}
       </button>
     {/if}
   </div>
