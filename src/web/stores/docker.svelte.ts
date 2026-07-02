@@ -10,7 +10,12 @@ import type {
   CrashDiagnostic,
 } from '../../types';
 import { DOCKER } from '../lib/constants';
-import { endpointId, linkKey } from '../lib/graphLinks';
+import {
+  mergeGraphData,
+  nextRolloutExpiry,
+  pruneExpiredRollouts,
+  pruneLinksToExistingNodes,
+} from '../lib/graphMerge';
 import { shouldRefreshLogSubscription } from '../lib/logSubscriptions';
 import { addToast } from './toast.svelte';
 export { addToast };
@@ -38,8 +43,6 @@ let replayMode = $state(false);
 
 /** Message types that replay owns — live updates of these are ignored while replaying */
 const REPLAYED_TYPES = new Set(['graph', 'stats', 'event', 'anomaly', 'diagnostic']);
-
-const ROLLOUT_GHOST_TTL = 1600;
 
 function clearReconnectTimer() {
   if (reconnectTimer) {
@@ -74,25 +77,6 @@ function refreshLogSubscription() {
   subscribeLogs(containerId);
 }
 
-function normalizeLink(link: ServiceLink): ServiceLink {
-  return {
-    source: endpointId(link.source),
-    target: endpointId(link.target),
-    type: link.type,
-    label: link.label,
-  };
-}
-
-function isKubernetesPod(node: ServiceNode): boolean {
-  return node.runtime === 'kubernetes' && node.kind === 'pod';
-}
-
-function pruneLinksToExistingNodes(links: ServiceLink[], nodeIds: Set<string>): ServiceLink[] {
-  return links.filter(
-    (link) => nodeIds.has(endpointId(link.source)) && nodeIds.has(endpointId(link.target)),
-  );
-}
-
 function setGraphData(nodes: ServiceNode[], links: ServiceLink[]) {
   const nodeIds = new Set(nodes.map((node) => node.id));
   graph = { nodes, links: pruneLinksToExistingNodes(links, nodeIds) };
@@ -106,20 +90,14 @@ function scheduleRolloutPrune() {
   }
 
   const now = Date.now();
-  const nextExpiry = Math.min(
-    ...graph.nodes
-      .map((node) => node.rolloutUntil)
-      .filter((until): until is number => typeof until === 'number' && until > now),
-  );
-  if (!Number.isFinite(nextExpiry)) {
+  const nextExpiry = nextRolloutExpiry(graph.nodes, now);
+  if (nextExpiry === null) {
     return;
   }
 
   rolloutPruneTimer = setTimeout(
     () => {
-      const cutoff = Date.now();
-      const nodes = graph.nodes.filter((node) => !node.rolloutUntil || node.rolloutUntil > cutoff);
-      setGraphData(nodes, graph.links);
+      setGraphData(pruneExpiredRollouts(graph.nodes, Date.now()), graph.links);
       scheduleRolloutPrune();
     },
     Math.max(0, nextExpiry - now),
@@ -127,68 +105,8 @@ function scheduleRolloutPrune() {
 }
 
 function mergeGraph(incoming: GraphData) {
-  const now = Date.now();
-  const incomingIds = new Set(incoming.nodes.map((node) => node.id));
-  const existingMap = new Map(graph.nodes.map((node) => [node.id, node]));
-  const previousLinks = graph.links.map(normalizeLink);
-
-  // Merge: preserve d3 simulation positions (x, y, z, vx, vy, vz)
-  const mergedNodes = incoming.nodes.map((newNode) => {
-    const existing = existingMap.get(newNode.id);
-    if (existing) {
-      Object.assign(existing, {
-        name: newNode.name,
-        fullName: newNode.fullName,
-        project: newNode.project,
-        runtime: newNode.runtime,
-        kind: newNode.kind,
-        namespace: newNode.namespace,
-        containerId: newNode.containerId,
-        image: newNode.image,
-        status: newNode.status,
-        health: newNode.health,
-        ports: newNode.ports,
-        networks: newNode.networks,
-        volumeCount: newNode.volumeCount,
-        rolloutPhase: undefined,
-        rolloutUntil: undefined,
-      });
-      return existing;
-    }
-    return newNode;
-  });
-
-  const existingGhosts = graph.nodes.filter(
-    (node) =>
-      node.rolloutPhase === 'terminating' &&
-      (node.rolloutUntil || 0) > now &&
-      !incomingIds.has(node.id),
-  );
-  const removedPods = graph.nodes
-    .filter(
-      (node) =>
-        isKubernetesPod(node) && node.rolloutPhase !== 'terminating' && !incomingIds.has(node.id),
-    )
-    .map((node) => ({
-      ...node,
-      status: 'removing' as const,
-      health: 'starting' as const,
-      rolloutPhase: 'terminating' as const,
-      rolloutUntil: now + ROLLOUT_GHOST_TTL,
-    }));
-
-  const ghostNodes = [...existingGhosts, ...removedPods];
-  const ghostIds = new Set(ghostNodes.map((node) => node.id));
-  const ghostLinks = previousLinks.filter(
-    (link) => ghostIds.has(endpointId(link.source)) || ghostIds.has(endpointId(link.target)),
-  );
-
-  const linkMap = new Map<string, ServiceLink>();
-  for (const link of [...incoming.links.map(normalizeLink), ...ghostLinks]) {
-    linkMap.set(linkKey(link), link);
-  }
-
-  setGraphData([...mergedNodes, ...ghostNodes], [...linkMap.values()]);
+  const merged = mergeGraphData(graph, incoming, Date.now());
+  setGraphData(merged.nodes, merged.links);
   scheduleRolloutPrune();
 }
 
