@@ -25,6 +25,12 @@ permissions:
   id-token: write
   packages: write
 
+# Never run two releases at once: they would race on the version bump,
+# npm publish, and the push back to main
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Version Bump & Publish
@@ -46,16 +52,20 @@ jobs:
 
       - run: npm ci
 
-      # Validate commit messages + lint + build
-      - name: Validate last commit
+      # Full quality gate before anything is published
+      - name: Validate pushed commits
         run: |
-          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+          BEFORE="${{ github.event.before }}"
+          # workflow_dispatch, new branch, or force push: no usable "before" SHA
+          if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            npx commitlint --from "$BEFORE" --to HEAD --verbose
+          elif git rev-parse HEAD~1 >/dev/null 2>&1; then
             npx commitlint --from HEAD~1 --to HEAD --verbose
-          else
-            echo "${{ github.event.head_commit.message }}" | npx commitlint --verbose
           fi
       - run: npm run format:check
       - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
       - run: npm run build
 
       # Determine version bump from commit messages
@@ -65,31 +75,31 @@ jobs:
         run: |
           MANUAL="${{ github.event.inputs.bump || 'auto' }}"
           if [ "$MANUAL" != "auto" ]; then
-            echo "type=$MANUAL" >> $GITHUB_OUTPUT
+            echo "type=$MANUAL" >> "$GITHUB_OUTPUT"
             echo "Manual bump: $MANUAL"
             exit 0
           fi
 
           if git describe --tags --abbrev=0 >/dev/null 2>&1; then
             LAST_TAG=$(git describe --tags --abbrev=0)
-            COMMITS=$(git log ${LAST_TAG}..HEAD --oneline)
+            COMMITS=$(git log "${LAST_TAG}..HEAD" --oneline)
           else
             COMMITS=$(git log --oneline)
           fi
 
           if echo "$COMMITS" | grep -qiE "BREAKING CHANGE|!:"; then
-            echo "type=major" >> $GITHUB_OUTPUT
+            echo "type=major" >> "$GITHUB_OUTPUT"
           elif echo "$COMMITS" | grep -qiE "\bfeat(\(.+\))?[!]?:"; then
-            echo "type=minor" >> $GITHUB_OUTPUT
+            echo "type=minor" >> "$GITHUB_OUTPUT"
           else
-            echo "type=patch" >> $GITHUB_OUTPUT
+            echo "type=patch" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Bump version
         id: version
         run: |
           NEW_VERSION=$(npm version ${{ steps.bump.outputs.type }} --no-git-tag-version)
-          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
           echo "Bumped to $NEW_VERSION (${{ steps.bump.outputs.type }})"
 
       - name: Rebuild with bumped version
@@ -116,7 +126,10 @@ jobs:
           generate_release_notes: true
 
       - name: Lowercase image name
-        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> $GITHUB_ENV
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -133,7 +146,7 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           provenance: false
           sbom: false
           tags: |
