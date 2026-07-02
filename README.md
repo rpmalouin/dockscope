@@ -25,7 +25,7 @@ A browser-based 3D dependency graph of your Docker services with live health, lo
 
 ## Quick Start
 
-> **Prerequisites:** [Node.js](https://nodejs.org/) (v18+) and [Docker](https://docs.docker.com/get-docker/) must be installed and running. Kubernetes graph support is enabled automatically when DockScope can load a kubeconfig or in-cluster service account with read access to the Kubernetes API.
+> **Prerequisites:** [Node.js](https://nodejs.org/) (v20+) and [Docker](https://docs.docker.com/get-docker/) must be installed and running. Kubernetes graph support is enabled automatically when DockScope can load a kubeconfig or in-cluster service account with read access to the Kubernetes API.
 
 ```bash
 npx dockscope up

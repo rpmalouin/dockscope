@@ -78,6 +78,6 @@
     "url": "git+https://github.com/ManuelR-T/dockscope.git"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   }
 }
