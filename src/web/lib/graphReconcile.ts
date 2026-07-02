@@ -1,6 +1,6 @@
-import type { GraphData, ServiceLink, ServiceNode } from '../../types';
-
-type LinkEndpoint = ServiceLink['source'] | ServiceLink['target'] | { id?: string };
+import type { GraphData, ServiceNode } from '../../types';
+import { linkKey as getLinkKey } from './graphLinks';
+export { endpointId, linkKey } from './graphLinks';
 
 export interface GraphSnapshot {
   nodeIds: Set<string>;
@@ -17,16 +17,6 @@ export interface GraphDiff {
   linksChanged: boolean;
   structureChanged: boolean;
   needsGraphDataUpdate: boolean;
-}
-
-export function endpointId(endpoint: LinkEndpoint): string {
-  return typeof endpoint === 'object' ? endpoint.id || '' : endpoint;
-}
-
-export function linkKey(link: ServiceLink): string {
-  return [endpointId(link.source), endpointId(link.target), link.type, link.label || ''].join(
-    '\u0000',
-  );
 }
 
 export function statusKey(node: ServiceNode): string {
@@ -58,7 +48,7 @@ export function captureGraphSnapshot(graph: GraphData): GraphSnapshot {
     nodeIds: new Set(graph.nodes.map((node) => node.id)),
     statusById: new Map(graph.nodes.map((node) => [node.id, statusKey(node)])),
     visualById: new Map(graph.nodes.map((node) => [node.id, visualKey(node)])),
-    linkKeys: new Set(graph.links.map(linkKey)),
+    linkKeys: new Set(graph.links.map(getLinkKey)),
   };
 }
 

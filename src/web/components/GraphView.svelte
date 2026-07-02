@@ -27,11 +27,21 @@
     updateBillboardPositions,
   } from '../lib/animations';
   import { buildNetworkColorMap } from '../lib/networkColors';
+  import { endpointId } from '../lib/graphLinks';
   import {
     captureGraphSnapshot,
     diffGraphSnapshot,
     type GraphSnapshot,
   } from '../lib/graphReconcile';
+  import {
+    computeImpactNodeIds,
+    findSearchMatches,
+    hasBrokenDependency,
+    isLinkVisible,
+    isNodeVisible,
+    type GraphFilters,
+    type StatusFilter,
+  } from '../lib/graphFilters';
   import { getDockerState } from '../stores/docker.svelte';
 
   interface Props {
@@ -39,7 +49,7 @@
     onNodeClick: (node: ServiceNode) => void;
     selectedNode: ServiceNode | null;
     searchQuery: string;
-    statusFilter: Set<string>;
+    statusFilter: Set<StatusFilter>;
     scopeFilter: string;
     colorNetworks: boolean;
     onHelpClick: () => void;
@@ -61,6 +71,8 @@
   // --- Derived importance ---
   let importanceMap = $derived(computeImportance(data.nodes, data.links));
 
+  let graphFilters = $derived<GraphFilters>({ searchQuery, statusFilter, scopeFilter });
+
   // Cache anomaly IDs for animation loop (avoid reactive reads in rAF)
   let anomalyIds = new Set<string>();
   $effect(() => {
@@ -70,25 +82,6 @@
     }
     anomalyIds = ids;
   });
-
-  // --- Health propagation ---
-  function hasBrokenDependency(nodeId: string): boolean {
-    for (const link of data.links) {
-      if (link.type !== 'depends_on') {
-        continue;
-      }
-      const srcId = typeof link.source === 'object' ? (link.source as any).id : link.source;
-      const tgtId = typeof link.target === 'object' ? (link.target as any).id : link.target;
-      if (srcId !== nodeId) {
-        continue;
-      }
-      const target = data.nodes.find((n) => n.id === tgtId);
-      if (target && (target.status !== 'running' || target.health === 'unhealthy')) {
-        return true;
-      }
-    }
-    return false;
-  }
 
   // --- Warning rings (shared with animation system) ---
   const warningRings: THREE.Sprite[] = [];
@@ -106,52 +99,8 @@
     }
   }
 
-  // --- Node visibility ---
-  function isInScope(node: any): boolean {
-    if (!scopeFilter) {
-      return true;
-    }
-
-    const [type, ...rest] = scopeFilter.split(':');
-    const value = rest.join(':');
-    if (type === 'kubernetes') {
-      return node.runtime === 'kubernetes' && node.namespace === value;
-    }
-    if (type === 'docker-project') {
-      return node.runtime !== 'kubernetes' && node.project === value;
-    }
-    if (type === 'docker-host') {
-      return node.runtime !== 'kubernetes' && !node.project && (node.host || 'local') === value;
-    }
-    return true;
-  }
-
-  function isNodeVisible(node: any): boolean {
-    if (!isInScope(node)) {
-      return false;
-    }
-    if (statusFilter.size > 0) {
-      const match =
-        (statusFilter.has('running') && node.status === 'running') ||
-        (statusFilter.has('stopped') && node.status !== 'running') ||
-        (statusFilter.has('unhealthy') && node.health === 'unhealthy');
-      if (!match) {
-        return false;
-      }
-    }
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      if (
-        !node.name?.toLowerCase().includes(q) &&
-        !node.fullName?.toLowerCase().includes(q) &&
-        !node.image?.toLowerCase().includes(q) &&
-        !node.namespace?.toLowerCase().includes(q) &&
-        !node.kind?.toLowerCase().includes(q)
-      ) {
-        return false;
-      }
-    }
-    return true;
+  function isGraphNodeVisible(node: ServiceNode): boolean {
+    return isNodeVisible(node, graphFilters);
   }
 
   // --- Selection / hover state (plain vars to avoid reactive tracking in callbacks) ---
@@ -162,28 +111,6 @@
   // --- Impact view mode ---
   let impactMode = $state(false);
   let impactedIds = $state<Set<string>>(new Set());
-
-  /** Traverse depends_on links upstream: find all nodes that would break if `nodeId` goes down */
-  function computeImpact(nodeId: string): Set<string> {
-    const impacted = new Set<string>([nodeId]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const link of data.links) {
-        if (link.type !== 'depends_on') {
-          continue;
-        }
-        const srcId = typeof link.source === 'object' ? (link.source as any).id : link.source;
-        const tgtId = typeof link.target === 'object' ? (link.target as any).id : link.target;
-        // src depends_on tgt — if tgt is impacted, src is too
-        if (impacted.has(tgtId) && !impacted.has(srcId)) {
-          impacted.add(srcId);
-          changed = true;
-        }
-      }
-    }
-    return impacted;
-  }
 
   function applyImpactDimming(nodes: any[], affected: Set<string>) {
     for (const node of nodes) {
@@ -232,14 +159,14 @@
   let networkColorMap = $derived(buildNetworkColorMap(data.links));
 
   function getLinkColor(link: any): string {
-    const s = typeof link.source === 'object' ? link.source : null;
-    const t = typeof link.target === 'object' ? link.target : null;
-    const hl = activeNodeId && (s?.id === activeNodeId || t?.id === activeNodeId);
+    const sourceId = endpointId(link.source);
+    const targetId = endpointId(link.target);
+    const hl = activeNodeId && (sourceId === activeNodeId || targetId === activeNodeId);
 
     // Impact mode: only show depends_on links in the impact chain
     if (impactedIds.size > 0) {
       const inImpact =
-        link.type === 'depends_on' && s && t && impactedIds.has(s.id) && impactedIds.has(t.id);
+        link.type === 'depends_on' && impactedIds.has(sourceId) && impactedIds.has(targetId);
       if (inImpact) {
         return '#ff8a2b';
       }
@@ -260,14 +187,14 @@
   }
 
   function getLinkWidth(link: any): number {
-    const s = typeof link.source === 'object' ? link.source : null;
-    const t = typeof link.target === 'object' ? link.target : null;
-    const hl = activeNodeId && (s?.id === activeNodeId || t?.id === activeNodeId);
+    const sourceId = endpointId(link.source);
+    const targetId = endpointId(link.target);
+    const hl = activeNodeId && (sourceId === activeNodeId || targetId === activeNodeId);
 
     // Impact mode: only depends_on in the chain are visible
     if (impactedIds.size > 0) {
       const inImpact =
-        link.type === 'depends_on' && s && t && impactedIds.has(s.id) && impactedIds.has(t.id);
+        link.type === 'depends_on' && impactedIds.has(sourceId) && impactedIds.has(targetId);
       return inImpact ? 1 : 0.05;
     }
 
@@ -289,7 +216,7 @@
       .nodeId('id')
       .nodeThreeObject((node: any) => {
         const imp = importanceMap.get(node.id) || 0;
-        const group = buildNodeObject(node, imp, hasBrokenDependency(node.id), warningRings);
+        const group = buildNodeObject(node, imp, hasBrokenDependency(node.id, data), warningRings);
         if (node.rolloutPhase === 'terminating') {
           addRolloutExitAnimation(group);
         } else {
@@ -357,7 +284,7 @@
 
     // Animation loop (clusters + deploy anims + warning pulse)
     function loop() {
-      updateClusters(g.scene(), g.graphData().nodes, isNodeVisible);
+      updateClusters(g.scene(), g.graphData().nodes, isGraphNodeVisible);
       tickAnimations();
       tickRolloutAnimations();
       tickFlashAnimations();
@@ -467,8 +394,8 @@
         if (link.type !== 'depends_on') {
           continue;
         }
-        const sourceId = typeof link.source === 'object' ? (link.source as any).id : link.source;
-        const targetId = typeof link.target === 'object' ? (link.target as any).id : link.target;
+        const sourceId = endpointId(link.source);
+        const targetId = endpointId(link.target);
         if (targetId && diff.statusChangedNodeIds.has(targetId)) {
           nodesToRefresh.add(sourceId);
         }
@@ -484,7 +411,7 @@
         continue;
       }
       const imp = importanceMap.get(node.id) || 0;
-      refreshNodeObject(group, node, imp, hasBrokenDependency(node.id), warningRings);
+      refreshNodeObject(group, node, imp, hasBrokenDependency(node.id, data), warningRings);
       if (node.rolloutPhase === 'terminating') {
         addRolloutExitAnimation(group);
       } else if (diff.statusChangedNodeIds.has(node.id)) {
@@ -528,7 +455,7 @@
 
       // Impact view dimming
       if (impact && sel) {
-        impactedIds = computeImpact(sel.id);
+        impactedIds = computeImpactNodeIds(sel.id, data.links);
       } else {
         impactedIds = new Set();
       }
@@ -557,22 +484,10 @@
       graph.nodeVisibility(() => true);
       graph.linkVisibility(() => true);
     } else {
-      graph.nodeVisibility((node: any) => isNodeVisible(node));
-      graph.linkVisibility((link: any) => {
-        const s = typeof link.source === 'object' ? link.source : null;
-        const t = typeof link.target === 'object' ? link.target : null;
-        return (s ? isNodeVisible(s) : true) && (t ? isNodeVisible(t) : true);
-      });
+      graph.nodeVisibility((node: any) => isNodeVisible(node, graphFilters));
+      graph.linkVisibility((link: any) => isLinkVisible(link, graphFilters));
       if (searchQuery) {
-        const q = searchQuery.toLowerCase();
-        const matches = data.nodes.filter(
-          (n) =>
-            n.name.toLowerCase().includes(q) ||
-            n.fullName?.toLowerCase().includes(q) ||
-            n.image.toLowerCase().includes(q) ||
-            n.namespace?.toLowerCase().includes(q) ||
-            n.kind?.toLowerCase().includes(q),
-        );
+        const matches = findSearchMatches(data.nodes, searchQuery);
         if (matches.length === 1) {
           const node = matches[0] as any;
           if (node.x !== undefined) {

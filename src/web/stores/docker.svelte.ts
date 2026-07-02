@@ -10,6 +10,7 @@ import type {
   CrashDiagnostic,
 } from '../../types';
 import { DOCKER } from '../lib/constants';
+import { endpointId, linkKey } from '../lib/graphLinks';
 import { addToast } from './toast.svelte';
 export { addToast };
 
@@ -53,10 +54,6 @@ function sendLogSubscription() {
       JSON.stringify({ type: 'subscribe_logs', data: { containerId: streamingLogContainerId } }),
     );
   }
-}
-
-function endpointId(endpoint: ServiceLink['source'] | { id?: string }): string {
-  return typeof endpoint === 'object' ? endpoint.id || '' : endpoint;
 }
 
 function normalizeLink(link: ServiceLink): ServiceLink {
@@ -170,8 +167,7 @@ function mergeGraph(incoming: GraphData) {
 
   const linkMap = new Map<string, ServiceLink>();
   for (const link of [...incoming.links.map(normalizeLink), ...ghostLinks]) {
-    const key = `${endpointId(link.source)}->${endpointId(link.target)}:${link.type}:${link.label || ''}`;
-    linkMap.set(key, link);
+    linkMap.set(linkKey(link), link);
   }
 
   setGraphData([...mergedNodes, ...ghostNodes], [...linkMap.values()]);

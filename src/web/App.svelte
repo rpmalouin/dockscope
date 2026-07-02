@@ -9,17 +9,19 @@
   import HostManager from './components/HostManager.svelte';
   import Toast from './components/Toast.svelte';
   import { UI } from './lib/constants';
+  import { buildScopeOptions, type StatusFilter } from './lib/graphFilters';
   import type { ServiceNode } from '../types';
 
+  const DEFAULT_COLOR_NETWORKS = true;
   const docker = getDockerState();
   let selectedNode = $state<ServiceNode | null>(null);
   let searchQuery = $state('');
-  let statusFilter = $state<Set<string>>(new Set());
+  let statusFilter = $state<Set<StatusFilter>>(new Set());
   let scopeFilter = $state('');
   let showHelp = $state(false);
   let showProjects = $state(false);
   let showHosts = $state(false);
-  let colorNetworks = $state(true);
+  let colorNetworks = $state(DEFAULT_COLOR_NETWORKS);
   let showFilters = $state(false);
   let filterBtn = $state<HTMLElement | null>(null);
   let hudBar = $state<HTMLElement | null>(null);
@@ -31,44 +33,7 @@
   let statusbarHeight: number = $state(UI.statusbar.default);
   let dragging = $state<'sidebar' | 'statusbar' | null>(null);
   let latestVersion = $state<string | null>(null);
-  let scopeOptions = $derived.by(() => {
-    const options: { value: string; label: string }[] = [];
-
-    const dockerProjects = [
-      ...new Set(
-        docker.graph.nodes
-          .filter((node) => node.runtime !== 'kubernetes' && node.project)
-          .map((node) => node.project),
-      ),
-    ].sort();
-    for (const project of dockerProjects) {
-      options.push({ value: `docker-project:${project}`, label: `Docker / ${project}` });
-    }
-
-    const standaloneHosts = [
-      ...new Set(
-        docker.graph.nodes
-          .filter((node) => node.runtime !== 'kubernetes' && !node.project)
-          .map((node) => node.host || 'local'),
-      ),
-    ].sort();
-    for (const host of standaloneHosts) {
-      options.push({ value: `docker-host:${host}`, label: `Docker / ${host}` });
-    }
-
-    const namespaces = [
-      ...new Set(
-        docker.graph.nodes
-          .filter((node) => node.runtime === 'kubernetes' && node.namespace)
-          .map((node) => node.namespace!),
-      ),
-    ].sort();
-    for (const namespace of namespaces) {
-      options.push({ value: `kubernetes:${namespace}`, label: `Kubernetes / ${namespace}` });
-    }
-
-    return options;
-  });
+  let scopeOptions = $derived(buildScopeOptions(docker.graph.nodes));
 
   $effect(() => {
     if (scopeFilter && !scopeOptions.some((option) => option.value === scopeFilter)) {
@@ -128,6 +93,12 @@
     } else if (e.key === '?') {
       showHelp = !showHelp;
     }
+  }
+
+  function toggleStatusFilter(status: StatusFilter) {
+    const next = new Set(statusFilter);
+    next.has(status) ? next.delete(status) : next.add(status);
+    statusFilter = next;
   }
 
   function startDrag(panel: 'sidebar' | 'statusbar') {
@@ -300,7 +271,9 @@
       {#if docker.graph.nodes.length > 0}
         <button
           class="hud-icon-btn"
-          class:active={statusFilter.size > 0 || scopeFilter || colorNetworks}
+          class:active={statusFilter.size > 0 ||
+            Boolean(scopeFilter) ||
+            colorNetworks !== DEFAULT_COLOR_NETWORKS}
           title="Filters"
           onclick={(e) => {
             filterBtn = e.currentTarget as HTMLElement;
@@ -344,33 +317,21 @@
           <button
             class="filter-pill"
             class:active={statusFilter.has('running')}
-            onclick={() => {
-              const s = new Set(statusFilter);
-              s.has('running') ? s.delete('running') : s.add('running');
-              statusFilter = s;
-            }}
+            onclick={() => toggleStatusFilter('running')}
           >
             <span class="dot green"></span> Running
           </button>
           <button
             class="filter-pill"
             class:active={statusFilter.has('stopped')}
-            onclick={() => {
-              const s = new Set(statusFilter);
-              s.has('stopped') ? s.delete('stopped') : s.add('stopped');
-              statusFilter = s;
-            }}
+            onclick={() => toggleStatusFilter('stopped')}
           >
             <span class="dot gray"></span> Stopped
           </button>
           <button
             class="filter-pill"
             class:active={statusFilter.has('unhealthy')}
-            onclick={() => {
-              const s = new Set(statusFilter);
-              s.has('unhealthy') ? s.delete('unhealthy') : s.add('unhealthy');
-              statusFilter = s;
-            }}
+            onclick={() => toggleStatusFilter('unhealthy')}
           >
             <span class="dot red"></span> Unhealthy
           </button>
