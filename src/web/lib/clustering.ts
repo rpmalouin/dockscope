@@ -9,6 +9,7 @@ import {
 } from 'three';
 import SpriteText from 'three-spritetext';
 import { PROJECT_PALETTE, HOST_PALETTE } from './constants';
+import type { PositionedSimNode, SimNode } from './simTypes';
 
 interface ClusterVisual {
   mesh: Mesh;
@@ -20,7 +21,7 @@ const clusterMap = new Map<string, ClusterVisual>();
 const hostClusterMap = new Map<string, ClusterVisual>();
 
 /** Compose a cluster key that groups by host then project */
-function clusterKey(node: any): string {
+function clusterKey(node: SimNode): string {
   const host = node.host || 'local';
   const project = node.project || '';
   return project ? `${host}/${project}` : '';
@@ -28,8 +29,8 @@ function clusterKey(node: any): string {
 
 /** Build centroid map from nodes using a key function, skipping empty keys */
 function buildCentroids(
-  nodes: any[],
-  keyFn: (node: any) => string,
+  nodes: PositionedSimNode[],
+  keyFn: (node: SimNode) => string,
 ): Map<string, { x: number; y: number; z: number; count: number }> {
   const centroids = new Map<string, { x: number; y: number; z: number; count: number }>();
   for (const node of nodes) {
@@ -57,9 +58,9 @@ function buildCentroids(
 
 /** Apply clustering force: pull each node toward its centroid */
 function applyCentroidForce(
-  nodes: any[],
+  nodes: PositionedSimNode[],
   centroids: Map<string, { x: number; y: number; z: number; count: number }>,
-  keyFn: (node: any) => string,
+  keyFn: (node: SimNode) => string,
   s: number,
   alpha: number,
 ): void {
@@ -75,20 +76,20 @@ function applyCentroidForce(
 }
 
 export function createClusteringForce(strength: number) {
-  let nodes: any[] = [];
+  let nodes: PositionedSimNode[] = [];
   function force(alpha: number) {
     // Cluster by host+project (project clusters stay within their host region)
     const centroids = buildCentroids(nodes, clusterKey);
     applyCentroidForce(nodes, centroids, clusterKey, strength, alpha);
 
     // Also apply a weaker host-level clustering force
-    const hostKey = (n: any) => n.host || 'local';
+    const hostKey = (n: SimNode) => n.host || 'local';
     const hostCentroids = buildCentroids(nodes, hostKey);
     if (hostCentroids.size > 1) {
       applyCentroidForce(nodes, hostCentroids, hostKey, strength * 0.5, alpha);
     }
   }
-  force.initialize = (n: any[]) => {
+  force.initialize = (n: PositionedSimNode[]) => {
     nodes = n;
   };
   return force;
@@ -133,21 +134,22 @@ function removeFromMap(scene: Scene, map: Map<string, ClusterVisual>, name: stri
 
 export function updateClusters(
   scene: Scene,
-  nodes: any[],
-  isVisible: (node: any) => boolean,
+  nodes: SimNode[],
+  isVisible: (node: SimNode) => boolean,
 ): void {
   // Group visible nodes by host+project key for project clusters
-  const projectNodes = new Map<string, any[]>();
+  const projectNodes = new Map<string, PositionedSimNode[]>();
   // Group visible nodes by host for host-level clusters
-  const hostNodes = new Map<string, any[]>();
+  const hostNodes = new Map<string, PositionedSimNode[]>();
 
-  for (const node of nodes) {
-    if (node.x === undefined) {
+  for (const candidate of nodes) {
+    if (candidate.x === undefined) {
       continue;
     }
-    if (!isVisible(node)) {
+    if (!isVisible(candidate)) {
       continue;
     }
+    const node = candidate as PositionedSimNode;
 
     const host = node.host || 'local';
     if (!hostNodes.has(host)) {

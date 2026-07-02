@@ -16,8 +16,12 @@ import {
 } from 'three';
 import SpriteText from 'three-spritetext';
 import { GRAPH } from './constants';
+import type { SimNode } from './simTypes';
 
 const NC = GRAPH.node;
+
+/** Group carrying our metadata under a private key */
+type MetaGroup = Group & { __meta?: NodeMeta };
 
 /** Typed metadata stored on each node's Three.js group */
 export interface NodeMeta {
@@ -36,7 +40,7 @@ export interface NodeMeta {
 
 /** Access typed metadata from a node's Three.js group */
 export function getMeta(group: Group): NodeMeta | null {
-  return (group as any).__meta ?? null;
+  return (group as MetaGroup).__meta ?? null;
 }
 
 export const STATUS_COLORS: Record<string, string> = {
@@ -52,7 +56,13 @@ export const STATUS_COLORS: Record<string, string> = {
   removing: '#3e4a5c',
 };
 
-export function getNodeColor(node: any): string {
+/** Param is deliberately loose: status flashes pass transient string pairs, not full nodes */
+export function getNodeColor(node: {
+  status: string;
+  health?: string;
+  runtime?: string;
+  kind?: string;
+}): string {
   if (node.runtime === 'kubernetes') {
     if (node.kind === 'service') {
       return '#a855f7';
@@ -105,7 +115,7 @@ function createRingSprite(
 }
 
 export function buildNodeObject(
-  node: any,
+  node: SimNode,
   importance: number,
   hasBrokenDep: boolean,
   warningRings: Sprite[],
@@ -221,7 +231,7 @@ export function buildNodeObject(
     moonCount,
     orbitPhase: Math.random() * Math.PI * 2,
   };
-  (group as any).__meta = meta;
+  (group as MetaGroup).__meta = meta;
 
   return group;
 }
@@ -254,7 +264,7 @@ function disposeObject(obj: Object3D): void {
 
 export function refreshNodeObject(
   group: Group,
-  node: any,
+  node: SimNode,
   importance: number,
   hasBrokenDep: boolean,
   warningRings: Sprite[],
@@ -268,10 +278,10 @@ export function refreshNodeObject(
     replacement.remove(child);
     group.add(child);
   }
-  (group as any).__meta = (replacement as any).__meta;
+  (group as MetaGroup).__meta = (replacement as MetaGroup).__meta;
 }
 
-export function highlightNode(node: any, active: boolean): void {
+export function highlightNode(node: SimNode | null | undefined, active: boolean): void {
   if (!node?.__threeObj) {
     return;
   }

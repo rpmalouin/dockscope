@@ -165,9 +165,12 @@ describe('rollout expiry helpers', () => {
 
 describe('link helpers', () => {
   it('normalizeLink resolves object endpoints', () => {
-    expect(
-      normalizeLink({ source: { id: 'x' } as any, target: 'y', type: 'depends_on' }),
-    ).toEqual({ source: 'x', target: 'y', type: 'depends_on', label: undefined });
+    expect(normalizeLink({ source: { id: 'x' } as any, target: 'y', type: 'depends_on' })).toEqual({
+      source: 'x',
+      target: 'y',
+      type: 'depends_on',
+      label: undefined,
+    });
   });
 
   it('pruneLinksToExistingNodes drops links with missing endpoints', () => {

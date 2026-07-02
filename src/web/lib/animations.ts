@@ -9,6 +9,7 @@ import {
 } from 'three';
 import { GRAPH } from './constants';
 import { getMeta } from './nodeRenderer';
+import type { SimNode } from './simTypes';
 
 interface PendingAnim {
   obj: Group;
@@ -188,7 +189,7 @@ export function pulseWarningRings(rings: Sprite[]): void {
 }
 
 /** Update anomaly indicator visibility and pulse on graph nodes. */
-export function updateAnomalyIndicators(nodes: any[], anomalyIds: Set<string>): void {
+export function updateAnomalyIndicators(nodes: SimNode[], anomalyIds: Set<string>): void {
   const pulse = 0.6 + Math.sin(performance.now() * 0.006) * 0.4;
   for (const node of nodes) {
     const meta = node.__threeObj ? getMeta(node.__threeObj) : null;
@@ -204,7 +205,7 @@ export function updateAnomalyIndicators(nodes: any[], anomalyIds: Set<string>): 
 }
 
 /** Reposition labels and anomaly indicators in the camera's view plane. */
-export function updateBillboardPositions(nodes: any[], camera: Camera): void {
+export function updateBillboardPositions(nodes: SimNode[], camera: Camera): void {
   const up = new Vector3();
   const right = new Vector3();
   right.setFromMatrixColumn(camera.matrixWorld, 0);
@@ -236,7 +237,7 @@ export function updateBillboardPositions(nodes: any[], camera: Camera): void {
 const _right = new Vector3();
 const _up = new Vector3();
 
-export function orbitVolumeMoons(nodes: any[], camera: Camera): void {
+export function orbitVolumeMoons(nodes: SimNode[], camera: Camera): void {
   const t = performance.now() * 0.00005;
   _right.setFromMatrixColumn(camera.matrixWorld, 0);
   _up.setFromMatrixColumn(camera.matrixWorld, 1);

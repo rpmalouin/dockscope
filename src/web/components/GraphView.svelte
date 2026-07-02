@@ -2,7 +2,7 @@
   import { onMount, untrack } from 'svelte';
   import ForceGraph3D, { type ForceGraph3DInstance } from '3d-force-graph';
   import { Vector3 } from 'three';
-  import type { Group, Sprite } from 'three';
+  import type { Sprite } from 'three';
   import type { GraphData, ServiceNode } from '../../types';
   import { GRAPH } from '../lib/constants';
   import { computeImportance } from '../lib/importance';
@@ -53,6 +53,10 @@
     type ProjectedLink,
     type ProjectedNode,
   } from '../lib/snapshot';
+  import type { PositionedSimNode, SimLink, SimNode } from '../lib/simTypes';
+
+  /** Material that stashes its pre-dim opacity for impact-mode restore */
+  type DimMaterial = { opacity: number; __origOpacity?: number };
 
   interface Props {
     data: GraphData;
@@ -101,7 +105,7 @@
       return;
     }
     warningRings.length = 0;
-    for (const node of graph.graphData().nodes) {
+    for (const node of graph.graphData().nodes as SimNode[]) {
       const meta = node.__threeObj ? getMeta(node.__threeObj) : null;
       if (meta?.warningRing) {
         warningRings.push(meta.warningRing);
@@ -122,7 +126,14 @@
   let impactMode = $state(false);
   let impactedIds = $state<Set<string>>(new Set());
 
-  function applyImpactDimming(nodes: any[], affected: Set<string>) {
+  function dimMaterial(mat: DimMaterial, dim: boolean, dimmedOpacity: number) {
+    if (mat.__origOpacity === undefined) {
+      mat.__origOpacity = mat.opacity;
+    }
+    mat.opacity = dim ? dimmedOpacity : mat.__origOpacity;
+  }
+
+  function applyImpactDimming(nodes: SimNode[], affected: Set<string>) {
     for (const node of nodes) {
       const obj = node.__threeObj;
       if (!obj) {
@@ -135,21 +146,14 @@
       const dim = affected.size > 0 && !affected.has(node.id);
 
       // Core sphere
-      if ((meta.coreMat as any).__origOpacity === undefined) {
-        (meta.coreMat as any).__origOpacity = meta.coreMat.opacity;
-      }
-      meta.coreMat.opacity = dim ? 0.08 : (meta.coreMat as any).__origOpacity;
+      dimMaterial(meta.coreMat as DimMaterial, dim, 0.08);
 
       // All children (rings, labels, moons)
       for (const child of obj.children) {
-        const m = (child as any).material;
-        if (!m) {
-          continue;
+        const m = (child as { material?: DimMaterial }).material;
+        if (m) {
+          dimMaterial(m, dim, 0.03);
         }
-        if (m.__origOpacity === undefined) {
-          m.__origOpacity = m.opacity;
-        }
-        m.opacity = dim ? 0.03 : m.__origOpacity;
       }
     }
   }
@@ -158,9 +162,9 @@
     if (!graph) {
       return;
     }
-    const nodes = graph.graphData().nodes;
+    const nodes = graph.graphData().nodes as SimNode[];
     if (selectedId) {
-      const selected = nodes.find((node: any) => node.id === selectedId);
+      const selected = nodes.find((node) => node.id === selectedId);
       highlightNode(selected, true);
     }
     applyImpactDimming(nodes, impactedIds);
@@ -168,7 +172,11 @@
 
   let networkColorMap = $derived(buildNetworkColorMap(data.links));
 
-  function getLinkColor(link: any): string {
+  function networkRgb(label: string | undefined): string {
+    return (label && networkColorMap.get(label)) || '0,228,255';
+  }
+
+  function getLinkColor(link: SimLink): string {
     const sourceId = endpointId(link.source);
     const targetId = endpointId(link.target);
     const hl = activeNodeId && (sourceId === activeNodeId || targetId === activeNodeId);
@@ -190,13 +198,13 @@
       return hl ? 'rgba(168,85,247,0.55)' : 'rgba(168,85,247,0.16)';
     }
     if (colorNetworks) {
-      const rgb = networkColorMap.get(link.label) || '0,228,255';
+      const rgb = networkRgb(link.label);
       return hl ? `rgba(${rgb},0.6)` : `rgba(${rgb},0.18)`;
     }
     return hl ? 'rgba(0,228,255,0.6)' : 'rgba(0,228,255,0.15)';
   }
 
-  function getLinkWidth(link: any): number {
+  function getLinkWidth(link: SimLink): number {
     const sourceId = endpointId(link.source);
     const targetId = endpointId(link.target);
     const hl = activeNodeId && (sourceId === activeNodeId || targetId === activeNodeId);
@@ -225,7 +233,7 @@
     const g = ForceGraph3D({ rendererConfig: { preserveDrawingBuffer: true } })(container)
       .backgroundColor('rgba(0,0,0,0)')
       .nodeId('id')
-      .nodeThreeObject((node: any) => {
+      .nodeThreeObject((node: SimNode) => {
         const imp = importanceMap.get(node.id) || 0;
         const group = buildNodeObject(node, imp, hasBrokenDependency(node.id, data), warningRings);
         if (node.rolloutPhase === 'terminating') {
@@ -238,19 +246,19 @@
       .nodeThreeObjectExtend(false)
       .linkColor(getLinkColor)
       .linkWidth(getLinkWidth)
-      .linkDirectionalArrowLength((link: any) => (link.type === 'depends_on' ? 4 : 0))
+      .linkDirectionalArrowLength((link: SimLink) => (link.type === 'depends_on' ? 4 : 0))
       .linkDirectionalArrowRelPos(1)
-      .linkDirectionalArrowColor((link: any) => getLinkColor(link))
+      .linkDirectionalArrowColor((link: SimLink) => getLinkColor(link))
       .linkOpacity(0.7)
-      .linkLabel((link: any) =>
+      .linkLabel((link: SimLink) =>
         link.type === 'depends_on' ? 'depends_on' : link.label || link.type || '',
       )
       .cooldownTicks(100)
       .d3AlphaDecay(0.08)
       .d3VelocityDecay(0.6)
       .warmupTicks(80)
-      .onNodeClick((node: any) => onNodeClick(node as ServiceNode))
-      .onNodeHover((node: any, prevNode: any) => {
+      .onNodeClick((node: SimNode) => onNodeClick(node))
+      .onNodeHover((node: SimNode | null, prevNode: SimNode | null) => {
         container.style.cursor = node ? 'pointer' : 'default';
         if (prevNode && prevNode.id !== selectedId) {
           highlightNode(prevNode, false);
@@ -320,9 +328,9 @@
   });
 
   // --- Initial host + project positioning ---
-  function assignProjectPositions(nodes: any[]) {
+  function assignProjectPositions(nodes: SimNode[]) {
     // Group by host first
-    const hosts = new Map<string, any[]>();
+    const hosts = new Map<string, SimNode[]>();
     for (const node of nodes) {
       const h = node.host || 'local';
       if (!hosts.has(h)) {
@@ -342,7 +350,7 @@
       const hz = multiHost ? Math.sin(hostAngle) * hostRadius : 0;
 
       // Group this host's nodes by project
-      const projects = new Map<string, any[]>();
+      const projects = new Map<string, SimNode[]>();
       for (const node of hostNodes) {
         const p = node.project || '';
         if (!projects.has(p)) {
@@ -364,7 +372,7 @@
         const cx = hx + Math.cos(angle) * baseRadius;
         const cz = hz + Math.sin(angle) * baseRadius;
         const cr = 8 * Math.sqrt(pNodes.length);
-        pNodes.forEach((node: any, j: number) => {
+        pNodes.forEach((node, j) => {
           if (node.x !== undefined) {
             return;
           }
@@ -417,7 +425,7 @@
       if (diff.addedNodeIds.has(node.id) || !nodesToRefresh.has(node.id)) {
         continue;
       }
-      const group = (node as any).__threeObj as Group | undefined;
+      const group = (node as SimNode).__threeObj;
       if (!group) {
         continue;
       }
@@ -449,15 +457,15 @@
       if (!graph) {
         return;
       }
-      const nodes = (graph.graphData() as any).nodes as any[];
+      const nodes = graph.graphData().nodes as SimNode[];
       if (prevSelectedId) {
-        const prev = nodes.find((n: any) => n.id === prevSelectedId);
+        const prev = nodes.find((n) => n.id === prevSelectedId);
         if (prev) {
           highlightNode(prev, false);
         }
       }
       if (sel) {
-        const node = nodes.find((n: any) => n.id === sel.id);
+        const node = nodes.find((n) => n.id === sel.id);
         highlightNode(node, true);
       }
       prevSelectedId = sel?.id || null;
@@ -482,7 +490,7 @@
       return;
     }
     void colorNetworks;
-    graph.linkColor((link: any) => getLinkColor(link));
+    graph.linkColor((link: SimLink) => getLinkColor(link));
   });
 
   // --- Search + status filtering ---
@@ -495,25 +503,27 @@
       graph.nodeVisibility(() => true);
       graph.linkVisibility(() => true);
     } else {
-      graph.nodeVisibility((node: any) => isNodeVisible(node, graphFilters));
-      graph.linkVisibility((link: any) => isLinkVisible(link, graphFilters));
+      graph.nodeVisibility((node: SimNode) => isNodeVisible(node, graphFilters));
+      graph.linkVisibility((link: SimLink) => isLinkVisible(link, graphFilters));
       if (searchQuery) {
         const matches = findSearchMatches(data.nodes, searchQuery);
         if (matches.length === 1) {
-          const node = matches[0] as any;
-          if (node.x !== undefined) {
-            const dist = 120;
-            const ratio = 1 + dist / Math.hypot(node.x || 1, node.y || 1, node.z || 1);
-            graph.cameraPosition(
-              { x: node.x * ratio, y: node.y * ratio, z: node.z * ratio },
-              node,
-              800,
-            );
-          }
+          flyToNode(matches[0]);
         }
       }
     }
   });
+
+  /** Fly the camera to frame a node, keeping it between camera and origin */
+  function flyToNode(target: SimNode) {
+    if (target.x === undefined || !graph) {
+      return;
+    }
+    const n = target as PositionedSimNode;
+    const dist = 120;
+    const ratio = 1 + dist / Math.hypot(n.x || 1, n.y || 1, n.z || 1);
+    graph.cameraPosition({ x: n.x * ratio, y: n.y * ratio, z: n.z * ratio }, n, 800);
+  }
 
   // --- Exported controls ---
   export function zoomToFit() {
@@ -526,11 +536,9 @@
     impactMode = !impactMode;
   }
   export function centerOnNode(node: ServiceNode) {
-    const n = data.nodes.find((nd: any) => nd.id === node.id) as any;
-    if (n?.x !== undefined && graph) {
-      const dist = 120;
-      const ratio = 1 + dist / Math.hypot(n.x || 1, n.y || 1, n.z || 1);
-      graph.cameraPosition({ x: n.x * ratio, y: n.y * ratio, z: n.z * ratio }, n, 800);
+    const n = data.nodes.find((nd) => nd.id === node.id);
+    if (n) {
+      flyToNode(n);
     }
   }
 
@@ -550,7 +558,7 @@
     }
   }
 
-  function svgLinkColor(link: any): string {
+  function svgLinkColor(link: SimLink): string {
     if (link.type === 'depends_on') {
       return 'rgba(255,138,43,0.5)';
     }
@@ -558,8 +566,7 @@
       return 'rgba(168,85,247,0.5)';
     }
     if (colorNetworks) {
-      const rgb = networkColorMap.get(link.label) || '0,228,255';
-      return `rgba(${rgb},0.4)`;
+      return `rgba(${networkRgb(link.label)},0.4)`;
     }
     return 'rgba(0,228,255,0.35)';
   }
@@ -592,7 +599,7 @@
 
     const nodesById = new Map<string, ProjectedNode>();
     const legendByLabel = new Map<string, string>();
-    for (const node of data.nodes as any[]) {
+    for (const node of data.nodes as SimNode[]) {
       if (node.x === undefined || !isNodeVisible(node, graphFilters)) {
         continue;
       }
@@ -623,7 +630,7 @@
     }
 
     const links: ProjectedLink[] = [];
-    for (const link of data.links as any[]) {
+    for (const link of data.links) {
       if (!isLinkVisible(link, graphFilters)) {
         continue;
       }
