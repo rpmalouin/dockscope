@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import ForceGraph3D, { type ForceGraph3DInstance } from '3d-force-graph';
+  import { Vector3 } from 'three';
   import type { Group, Sprite } from 'three';
   import type { GraphData, ServiceNode } from '../../types';
   import { GRAPH } from '../lib/constants';
@@ -42,7 +43,16 @@
     type GraphFilters,
     type StatusFilter,
   } from '../lib/graphFilters';
-  import { getDockerState } from '../stores/docker.svelte';
+  import { addToast, getDockerState } from '../stores/docker.svelte';
+  import {
+    buildGraphSVG,
+    captureCanvasPNG,
+    downloadBlob,
+    downloadText,
+    snapshotFilename,
+    type ProjectedLink,
+    type ProjectedNode,
+  } from '../lib/snapshot';
 
   interface Props {
     data: GraphData;
@@ -211,7 +221,8 @@
     const FC = GRAPH.force;
     const CC = GRAPH.controls;
 
-    const g = ForceGraph3D()(container)
+    // preserveDrawingBuffer keeps the frame readable for PNG snapshot export
+    const g = ForceGraph3D({ rendererConfig: { preserveDrawingBuffer: true } })(container)
       .backgroundColor('rgba(0,0,0,0)')
       .nodeId('id')
       .nodeThreeObject((node: any) => {
@@ -522,6 +533,127 @@
       graph.cameraPosition({ x: n.x * ratio, y: n.y * ratio, z: n.z * ratio }, n, 800);
     }
   }
+
+  // --- Snapshot export ---
+
+  export async function exportPNG() {
+    const canvas: HTMLCanvasElement | undefined = graph?.renderer?.()?.domElement;
+    if (!canvas) {
+      return;
+    }
+    const blob = await captureCanvasPNG(canvas, `DockScope — ${new Date().toLocaleString()}`);
+    if (blob) {
+      downloadBlob(blob, snapshotFilename('png'));
+      addToast('PNG snapshot exported', 'success');
+    } else {
+      addToast('PNG export failed', 'error');
+    }
+  }
+
+  function svgLinkColor(link: any): string {
+    if (link.type === 'depends_on') {
+      return 'rgba(255,138,43,0.5)';
+    }
+    if (link.type === 'kubernetes') {
+      return 'rgba(168,85,247,0.5)';
+    }
+    if (colorNetworks) {
+      const rgb = networkColorMap.get(link.label) || '0,228,255';
+      return `rgba(${rgb},0.4)`;
+    }
+    return 'rgba(0,228,255,0.35)';
+  }
+
+  function nodeLegendLabel(node: ServiceNode): string {
+    if (node.status === 'running') {
+      if (node.health === 'healthy') {
+        return 'Running (healthy)';
+      }
+      if (node.health === 'unhealthy') {
+        return 'Unhealthy';
+      }
+      if (node.health === 'starting') {
+        return 'Starting';
+      }
+      return 'Running';
+    }
+    return node.status.charAt(0).toUpperCase() + node.status.slice(1);
+  }
+
+  export function exportSVG() {
+    if (!graph) {
+      return;
+    }
+    const cam = graph.camera();
+    cam.updateMatrixWorld?.();
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+    const right = new Vector3().setFromMatrixColumn(cam.matrixWorld, 0);
+
+    const nodesById = new Map<string, ProjectedNode>();
+    const legendByLabel = new Map<string, string>();
+    for (const node of data.nodes as any[]) {
+      if (node.x === undefined || !isNodeVisible(node, graphFilters)) {
+        continue;
+      }
+      const pos = new Vector3(node.x, node.y || 0, node.z || 0);
+      const p = pos.clone().project(cam);
+      if (p.z > 1 || p.z < -1) {
+        continue; // behind the camera or beyond the far plane
+      }
+      const imp = importanceMap.get(node.id) || 0;
+      const baseRadius =
+        node.status === 'running' ? GRAPH.node.baseRadius.running : GRAPH.node.baseRadius.stopped;
+      const worldR = baseRadius * (1 + imp * GRAPH.node.importanceScale);
+      const edge = pos.clone().addScaledVector(right, worldR).project(cam);
+      const r = Math.max(
+        2,
+        Math.hypot(((edge.x - p.x) / 2) * width, ((edge.y - p.y) / 2) * height),
+      );
+      const projected: ProjectedNode = {
+        x: ((p.x + 1) / 2) * width,
+        y: ((1 - p.y) / 2) * height,
+        r,
+        color: getNodeColor(node),
+        label: node.name,
+        depth: p.z,
+      };
+      nodesById.set(node.id, projected);
+      legendByLabel.set(nodeLegendLabel(node), getNodeColor(node));
+    }
+
+    const links: ProjectedLink[] = [];
+    for (const link of data.links as any[]) {
+      if (!isLinkVisible(link, graphFilters)) {
+        continue;
+      }
+      const s = nodesById.get(endpointId(link.source));
+      const t = nodesById.get(endpointId(link.target));
+      if (!s || !t) {
+        continue;
+      }
+      links.push({
+        x1: s.x,
+        y1: s.y,
+        x2: t.x,
+        y2: t.y,
+        color: svgLinkColor(link),
+        width: link.type === 'depends_on' ? 1.2 : 1,
+        arrow: link.type === 'depends_on',
+      });
+    }
+
+    const svg = buildGraphSVG({
+      width,
+      height,
+      nodes: [...nodesById.values()],
+      links,
+      subtitle: `${nodesById.size} containers — ${new Date().toLocaleString()}`,
+      legend: [...legendByLabel.entries()].map(([label, color]) => ({ label, color })),
+    });
+    downloadText(svg, 'image/svg+xml', snapshotFilename('svg'));
+    addToast('SVG snapshot exported', 'success');
+  }
 </script>
 
 <div class="graph-wrapper">
@@ -592,6 +724,27 @@
       </button>
     {/if}
     <span class="ctrl-divider"></span>
+    <button class="graph-ctrl-btn" title="Export PNG snapshot" onclick={exportPNG}>
+      <svg
+        width="15"
+        height="15"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path
+          d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"
+        />
+        <circle cx="12" cy="13" r="4" />
+      </svg>
+    </button>
+    <button class="graph-ctrl-btn" title="Export SVG snapshot" onclick={exportSVG}>
+      <span class="export-glyph">SVG</span>
+    </button>
+    <span class="ctrl-divider"></span>
     <button class="graph-ctrl-btn help-btn" title="Keyboard shortcuts (?)" onclick={onHelpClick}>
       <span class="help-glyph">?</span>
     </button>
@@ -648,6 +801,13 @@
     font-family: 'Fira Code', monospace;
     font-size: 13px;
     font-weight: 600;
+    line-height: 1;
+  }
+  .export-glyph {
+    font-family: 'Fira Code', monospace;
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
     line-height: 1;
   }
 </style>

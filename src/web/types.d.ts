@@ -1,7 +1,10 @@
 declare const __APP_VERSION__: string;
 
 declare module '3d-force-graph' {
-  export default function ForceGraph3D(): (element: HTMLElement) => ForceGraph3DInstance;
+  export default function ForceGraph3D(config?: {
+    controlType?: string;
+    rendererConfig?: Record<string, unknown>;
+  }): (element: HTMLElement) => ForceGraph3DInstance;
 
   export interface ForceGraph3DInstance {
     graphData(): { nodes: any[]; links: any[] };
