@@ -11,6 +11,7 @@
   } from '../stores/docker.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
   import HpaReplicaDialog from './HpaReplicaDialog.svelte';
+  import SidebarHeader from './SidebarHeader.svelte';
   import SidebarInfo from './sidebar/SidebarInfo.svelte';
   import SidebarEnv from './sidebar/SidebarEnv.svelte';
   import SidebarLogs from './sidebar/SidebarLogs.svelte';
@@ -27,7 +28,6 @@
     getHpaReplicaRange,
     getKubernetesPodLogs,
     kubernetesActionPastTense,
-    kubernetesRestartMessage,
     loadDockerSidebarData,
     removeContainer,
     runContainerAction,
@@ -35,6 +35,14 @@
     type ContainerUiAction,
     type KubernetesUiAction,
   } from '../lib/sidebarApi';
+  import {
+    confirmKill,
+    confirmKubernetesDelete,
+    confirmKubernetesRestart,
+    confirmRemove,
+    confirmStop,
+    type ConfirmKind,
+  } from '../lib/sidebarActions';
 
   const docker = getDockerState();
 
@@ -52,8 +60,6 @@
   let activeTab = $state<'info' | 'env' | 'logs' | 'top' | 'diff' | 'exec'>('info');
   let kubernetesLogs = $state('');
   let actionPending = $state(false);
-  let showMore = $state(false);
-  let moreBtn = $state<HTMLElement | null>(null);
   let hpaDialog = $state<{ node: ServiceNode; min: number; max: number } | null>(null);
 
   let confirmDialog = $state<{
@@ -133,14 +139,43 @@
     }
   }
 
-  function confirm(opts: typeof confirmDialog) {
-    showMore = false;
-    confirmDialog = opts;
-  }
-
   function showHpaReplicaDialog(node: ServiceNode) {
     const current = getHpaReplicaRange(node);
     hpaDialog = { node, min: current.min, max: current.max };
+  }
+
+  /** Open the confirm dialog for a destructive action requested by the header */
+  function openConfirm(kind: ConfirmKind) {
+    const target = node;
+    if (!target) {
+      return;
+    }
+    switch (kind) {
+      case 'stop':
+        confirmDialog = { ...confirmStop(target), action: () => doAction('stop') };
+        break;
+      case 'kill':
+        confirmDialog = { ...confirmKill(target), action: () => doAction('kill') };
+        break;
+      case 'remove':
+        confirmDialog = { ...confirmRemove(target, false), action: () => doRemove(false) };
+        break;
+      case 'removeVolumes':
+        confirmDialog = { ...confirmRemove(target, true), action: () => doRemove(true) };
+        break;
+      case 'k8sRestart':
+        confirmDialog = {
+          ...confirmKubernetesRestart(target),
+          action: () => doKubernetesAction('restart'),
+        };
+        break;
+      case 'k8sDelete':
+        confirmDialog = {
+          ...confirmKubernetesDelete(target),
+          action: () => doKubernetesAction('delete'),
+        };
+        break;
+    }
   }
 
   // Fetch stats + inspect + history when node changes
@@ -151,7 +186,6 @@
       inspect = null;
       history = [];
       kubernetesLogs = '';
-      showMore = false;
       return;
     }
     // Replay mode shows historical node state — live inspect/stats/logs would contradict it
@@ -160,7 +194,6 @@
       inspect = null;
       history = [];
       kubernetesLogs = '';
-      showMore = false;
       activeTab = 'info';
       return;
     }
@@ -182,7 +215,6 @@
     inspect = null;
     history = [];
     kubernetesLogs = '';
-    showMore = false;
 
     const controller = new AbortController();
     if (isKubernetes) {
@@ -289,171 +321,15 @@
       </div>
     </div>
   {:else}
-    <div class="sidebar-header">
-      <div class="sidebar-title">
-        <span
-          class="status-dot {node.status === 'running'
-            ? node.health === 'unhealthy'
-              ? 'unhealthy'
-              : 'running'
-            : node.status === 'paused'
-              ? 'paused'
-              : 'exited'}"
-        ></span>
-        <h3>{node.name}</h3>
-      </div>
-      <div class="header-right">
-        {#if !docker.replayMode}
-          {#if isKubernetesNode}
-            <button
-              class="act-icon"
-              class:spinning={actionPending}
-              title="Restart backing pods"
-              onclick={() =>
-                confirm({
-                  title: node.kind === 'pod' ? 'Restart Pod' : 'Restart Backing Pods',
-                  message: kubernetesRestartMessage(node),
-                  confirmLabel: 'Restart',
-                  variant: 'warning',
-                  action: () => doKubernetesAction('restart'),
-                })}
-              disabled={actionPending}
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-              </svg>
-            </button>
-          {:else if !isKubernetesNode && node.status === 'running'}
-            <button
-              class="act-icon warning"
-              title="Pause"
-              onclick={() => doAction('pause')}
-              disabled={actionPending}
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"
-                ><rect x="5" y="4" width="4" height="16" rx="1" /><rect
-                  x="15"
-                  y="4"
-                  width="4"
-                  height="16"
-                  rx="1"
-                /></svg
-              >
-            </button>
-            <button
-              class="act-icon"
-              class:spinning={actionPending}
-              title="Restart"
-              onclick={() => doAction('restart')}
-              disabled={actionPending}
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-              </svg>
-            </button>
-            <button
-              class="act-icon danger"
-              title="Stop"
-              onclick={() =>
-                confirm({
-                  title: 'Stop Container',
-                  message: `Stop ${node.name}? The container will be gracefully terminated.`,
-                  confirmLabel: 'Stop',
-                  variant: 'warning',
-                  action: () => doAction('stop'),
-                })}
-              disabled={actionPending}
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"
-                ><rect x="4" y="4" width="16" height="16" rx="2" /></svg
-              >
-            </button>
-          {:else if !isKubernetesNode && node.status === 'paused'}
-            <button
-              class="act-icon success"
-              title="Unpause"
-              onclick={() => doAction('unpause')}
-              disabled={actionPending}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
-                ><polygon points="6,3 20,12 6,21" /></svg
-              >
-            </button>
-            <button
-              class="act-icon"
-              class:spinning={actionPending}
-              title="Restart"
-              onclick={() => doAction('restart')}
-              disabled={actionPending}
-            >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              >
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-              </svg>
-            </button>
-          {:else if !isKubernetesNode}
-            <button
-              class="act-icon success"
-              title="Start"
-              onclick={() => doAction('start')}
-              disabled={actionPending}
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
-                ><polygon points="6,3 20,12 6,21" /></svg
-              >
-            </button>
-          {/if}
-
-          <!-- More actions trigger -->
-          <button
-            class="act-icon"
-            title="More actions"
-            onclick={(e) => {
-              moreBtn = e.currentTarget as HTMLElement;
-              showMore = !showMore;
-            }}
-            disabled={actionPending}
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
-              ><circle cx="12" cy="5" r="2" /><circle cx="12" cy="12" r="2" /><circle
-                cx="12"
-                cy="19"
-                r="2"
-              /></svg
-            >
-          </button>
-        {/if}
-
-        <span class="header-sep"></span>
-        <button class="close-btn" onclick={onClose}>&times;</button>
-      </div>
-    </div>
+    <SidebarHeader
+      {node}
+      {actionPending}
+      hideActions={docker.replayMode}
+      {onClose}
+      onDirect={doAction}
+      onConfirmAction={openConfirm}
+      onHpaDialog={() => showHpaReplicaDialog(node)}
+    />
 
     <div class="sidebar-tabs">
       <button
@@ -528,99 +404,6 @@
     {/if}
   {/if}
 </div>
-
-{#if showMore && node && moreBtn}
-  <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
-  <div class="more-backdrop" onclick={() => (showMore = false)} onkeydown={() => {}}></div>
-  <div
-    class="more-menu"
-    style="top: {moreBtn.getBoundingClientRect().bottom + 4}px; right: {window.innerWidth -
-      moreBtn.getBoundingClientRect().right}px;"
-  >
-    {#if node.runtime === 'kubernetes'}
-      <button
-        class="more-item"
-        onclick={() => {
-          showMore = false;
-          confirm({
-            title: node.kind === 'pod' ? 'Restart Pod' : 'Restart Backing Pods',
-            message: kubernetesRestartMessage(node),
-            confirmLabel: 'Restart',
-            variant: 'warning',
-            action: () => doKubernetesAction('restart'),
-          });
-        }}>Restart</button
-      >
-      {#if node.kind === 'hpa'}
-        <button
-          class="more-item"
-          onclick={() => {
-            showMore = false;
-            showHpaReplicaDialog(node);
-          }}>Set replica bounds</button
-        >
-      {/if}
-      <button
-        class="more-item danger"
-        onclick={() => {
-          showMore = false;
-          confirm({
-            title: `Delete ${node.kind}`,
-            message: `Delete ${node.fullName}? This removes the Kubernetes ${node.kind} resource from the cluster.`,
-            confirmLabel: 'Delete',
-            variant: 'danger',
-            typeToConfirm: node.name,
-            action: () => doKubernetesAction('delete'),
-          });
-        }}>Delete</button
-      >
-    {:else if node.status === 'running' || node.status === 'paused'}
-      <button
-        class="more-item"
-        onclick={() => {
-          showMore = false;
-          confirm({
-            title: 'Kill Container',
-            message: `Forcefully terminate ${node.name}? This sends SIGKILL — no graceful shutdown.`,
-            confirmLabel: 'Kill',
-            variant: 'warning',
-            action: () => doAction('kill'),
-          });
-        }}>Kill</button
-      >
-    {/if}
-    {#if node.runtime !== 'kubernetes'}
-      <button
-        class="more-item danger"
-        onclick={() => {
-          showMore = false;
-          confirm({
-            title: 'Remove Container',
-            message: `Permanently remove ${node.name}? This deletes the container.`,
-            confirmLabel: 'Remove',
-            variant: 'danger',
-            typeToConfirm: node.name,
-            action: () => doRemove(false),
-          });
-        }}>Remove</button
-      >
-      <button
-        class="more-item danger"
-        onclick={() => {
-          showMore = false;
-          confirm({
-            title: 'Remove with Volumes',
-            message: `Remove ${node.name} and ALL its volumes? This is irreversible.`,
-            confirmLabel: 'Remove + Volumes',
-            variant: 'danger',
-            typeToConfirm: node.name,
-            action: () => doRemove(true),
-          });
-        }}>Remove + Volumes</button
-      >
-    {/if}
-  </div>
-{/if}
 
 {#if hpaDialog}
   <HpaReplicaDialog
