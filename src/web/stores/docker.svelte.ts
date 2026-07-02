@@ -11,6 +11,7 @@ import type {
 } from '../../types';
 import { DOCKER } from '../lib/constants';
 import { endpointId, linkKey } from '../lib/graphLinks';
+import { shouldRefreshLogSubscription } from '../lib/logSubscriptions';
 import { addToast } from './toast.svelte';
 export { addToast };
 
@@ -54,6 +55,14 @@ function sendLogSubscription() {
       JSON.stringify({ type: 'subscribe_logs', data: { containerId: streamingLogContainerId } }),
     );
   }
+}
+
+function refreshLogSubscription() {
+  const containerId = streamingLogContainerId;
+  if (!containerId) {
+    return;
+  }
+  subscribeLogs(containerId);
 }
 
 function normalizeLink(link: ServiceLink): ServiceLink {
@@ -243,9 +252,14 @@ function connect() {
           break;
         }
 
-        case 'event':
-          events = [msg.data as DockerEvent, ...events].slice(0, 200);
+        case 'event': {
+          const event = msg.data as DockerEvent;
+          events = [event, ...events].slice(0, 200);
+          if (shouldRefreshLogSubscription(streamingLogContainerId, event)) {
+            refreshLogSubscription();
+          }
           break;
+        }
 
         case 'log_chunk': {
           const chunk = msg.data as LogChunk;

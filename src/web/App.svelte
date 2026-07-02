@@ -10,6 +10,7 @@
   import Toast from './components/Toast.svelte';
   import { UI } from './lib/constants';
   import { buildScopeOptions, type StatusFilter } from './lib/graphFilters';
+  import { resolveSelectedNode } from './lib/graphSelection';
   import type { ServiceNode } from '../types';
 
   const DEFAULT_COLOR_NETWORKS = true;
@@ -34,6 +35,7 @@
   let dragging = $state<'sidebar' | 'statusbar' | null>(null);
   let latestVersion = $state<string | null>(null);
   let scopeOptions = $derived(buildScopeOptions(docker.graph.nodes));
+  let activeSelectedNode = $derived(resolveSelectedNode(docker.graph.nodes, selectedNode));
 
   $effect(() => {
     if (scopeFilter && !scopeOptions.some((option) => option.value === scopeFilter)) {
@@ -69,7 +71,7 @@
         searchInput?.blur();
         return;
       }
-      if (selectedNode) {
+      if (activeSelectedNode) {
         selectedNode = null;
         return;
       }
@@ -86,9 +88,9 @@
       graphView?.zoomToFit();
     } else if (e.key === 'r' || e.key === 'R') {
       graphView?.resetCamera();
-    } else if ((e.key === 'c' || e.key === 'C') && selectedNode) {
-      graphView?.centerOnNode(selectedNode);
-    } else if ((e.key === 'i' || e.key === 'I') && selectedNode) {
+    } else if ((e.key === 'c' || e.key === 'C') && activeSelectedNode) {
+      graphView?.centerOnNode(activeSelectedNode);
+    } else if ((e.key === 'i' || e.key === 'I') && activeSelectedNode) {
       graphView?.toggleImpactMode();
     } else if (e.key === '?') {
       showHelp = !showHelp;
@@ -138,7 +140,7 @@
       bind:this={graphView}
       data={docker.graph}
       onNodeClick={(node) => (selectedNode = node)}
-      {selectedNode}
+      selectedNode={activeSelectedNode}
       {searchQuery}
       {statusFilter}
       {scopeFilter}
@@ -373,7 +375,7 @@
   <div class="sidebar-wrap" style="width: {sidebarWidth}px;">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="resize-handle-v" onmousedown={() => startDrag('sidebar')}></div>
-    <Sidebar node={selectedNode} onClose={() => (selectedNode = null)} {colorNetworks} />
+    <Sidebar node={activeSelectedNode} onClose={() => (selectedNode = null)} {colorNetworks} />
   </div>
 
   <div class="statusbar-wrap" style="height: {statusbarHeight}px; right: {sidebarWidth}px;">

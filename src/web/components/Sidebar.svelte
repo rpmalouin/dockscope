@@ -211,20 +211,23 @@
   $effect(() => {
     const tab = activeTab;
     const currentNode = node;
+    const containerId = currentNode?.containerId ?? null;
+    const runtime = currentNode?.runtime;
+    const kind = currentNode?.kind;
     return untrack(() => {
       const controller = new AbortController();
       const shouldStreamDockerLogs =
-        tab === 'logs' && currentNode !== null && currentNode.runtime !== 'kubernetes';
+        tab === 'logs' && containerId !== null && runtime !== 'kubernetes';
 
       if (shouldStreamDockerLogs) {
-        subscribeLogs(currentNode.containerId);
+        subscribeLogs(containerId);
       } else {
         unsubscribeLogs();
       }
 
-      if (tab === 'logs' && currentNode?.runtime === 'kubernetes' && currentNode.kind === 'pod') {
+      if (tab === 'logs' && runtime === 'kubernetes' && kind === 'pod' && containerId) {
         kubernetesLogs = '';
-        getKubernetesPodLogs(currentNode.containerId, 300, { signal: controller.signal })
+        getKubernetesPodLogs(containerId, 300, { signal: controller.signal })
           .then((logs) => {
             if (!controller.signal.aborted) {
               kubernetesLogs = logs;
