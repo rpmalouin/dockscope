@@ -69,6 +69,8 @@ Opens `http://localhost:4681`.
 - **Compose Manager** — Up, down, stop, restart, destroy entire projects. Cached metadata survives `docker compose down`.
 - **Container Inspection** — Env vars (secrets auto-masked), labels, mounts, processes, filesystem diff — all in sidebar tabs.
 - **Search & Filters** — Real-time search by name/image, status filters (running/stopped/unhealthy), network color toggle.
+- **Session Recording & Replay** — Record an incident (graph state, events, metrics over time) with the `REC` button in the status bar, saved as a JSON file. Replay it later with a timeline scrubber, play/pause (`Space`), event markers, and 1–8× speed for postmortem analysis.
+- **Snapshot Export** — Export the current graph view as a PNG (exact render) or SVG (vector projection with labels, dependency arrows, and a status legend) for documentation and READMEs. Both respect active search/status filters.
 - **Kubernetes Graph** — Pods, Services, Ingresses, and HPAs are rendered alongside Docker resources when Kubernetes API credentials are available. Services link to selected pods, Ingresses link to Services, HPAs show current vs desired replicas, and the HUD can filter Kubernetes resources by namespace.
 
 ## Keyboard Shortcuts
@@ -81,6 +83,7 @@ Opens `http://localhost:4681`.
 | `R` | Reset camera |
 | `C` | Center on selected node |
 | `I` | Toggle impact view |
+| `Space` | Play / pause replay |
 | `?` | Show shortcut help |
 
 ## API
