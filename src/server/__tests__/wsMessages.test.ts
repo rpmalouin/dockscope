@@ -14,7 +14,23 @@ describe('parseInboundWSMessage', () => {
         JSON.stringify({ type: 'subscribe_logs', data: { containerId: '123456789abc' } }),
       ),
     ).toEqual({ type: 'subscribe_logs', data: { containerId: '123456789abc' } });
+    expect(
+      parseInboundWSMessage(
+        JSON.stringify({
+          type: 'subscribe_logs',
+          data: { containerId: '123456789abc', host: 'remote-a' },
+        }),
+      ),
+    ).toEqual({
+      type: 'subscribe_logs',
+      data: { containerId: '123456789abc', host: 'remote-a' },
+    });
     expect(parseInboundWSMessage(JSON.stringify({ type: 'subscribe_logs', data: {} }))).toBeNull();
+    expect(
+      parseInboundWSMessage(
+        JSON.stringify({ type: 'subscribe_logs', data: { containerId: '../bad' } }),
+      ),
+    ).toBeNull();
     expect(parseInboundWSMessage(JSON.stringify({ type: 'unsubscribe_logs' }))).toEqual({
       type: 'unsubscribe_logs',
     });
@@ -25,12 +41,12 @@ describe('parseInboundWSMessage', () => {
       parseInboundWSMessage(
         JSON.stringify({
           type: 'exec_start',
-          data: { containerId: '123456789abc', cmd: ['/bin/sh'] },
+          data: { containerId: '123456789abc', host: 'remote-a', cmd: ['/bin/sh'] },
         }),
       ),
     ).toEqual({
       type: 'exec_start',
-      data: { containerId: '123456789abc', cmd: ['/bin/sh'] },
+      data: { containerId: '123456789abc', host: 'remote-a', cmd: ['/bin/sh'] },
     });
     expect(
       parseInboundWSMessage(

@@ -128,7 +128,7 @@ export function compareEnvironments(a: GraphData, b: GraphData): CompareResult {
 
 function formatMB(bytes: number): string {
   if (bytes === 0) {
-    return '0';
+    return 'No limit';
   }
   return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 }

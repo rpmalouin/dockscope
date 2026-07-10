@@ -1,11 +1,13 @@
 <script lang="ts">
-  import type { ContainerDiffEntry } from '../../../types';
+  import type { ContainerDiffEntry, ServiceNode } from '../../../types';
+  import { getJson, isAbortError } from '../../lib/api';
+  import { containerApiUrl } from '../../lib/sidebarApi';
 
   interface Props {
-    containerId: string;
+    node: ServiceNode;
   }
 
-  let { containerId }: Props = $props();
+  let { node }: Props = $props();
 
   let diff = $state<ContainerDiffEntry[]>([]);
   let loading = $state(true);
@@ -18,33 +20,35 @@
   let changed = $derived(safeDiff.filter((d) => d.kind === 'C').length);
   let deleted = $derived(safeDiff.filter((d) => d.kind === 'D').length);
 
-  async function fetchDiff() {
+  async function fetchDiff(target: ServiceNode, signal: AbortSignal) {
     loading = true;
     try {
-      const res = await fetch(`/api/containers/${containerId}/diff`, {
-        signal: AbortSignal.timeout(12000),
+      const data = await getJson<ContainerDiffEntry[]>(containerApiUrl(target, '/diff'), {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(12000)]),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || 'Failed');
-      }
-      const data = await res.json();
       diff = Array.isArray(data) ? data : [];
       error = '';
     } catch (e: any) {
+      if (isAbortError(e) && signal.aborted) {
+        return;
+      }
       diff = [];
       error =
         e?.name === 'TimeoutError' || e?.message?.includes('timed out')
           ? 'Diff timed out — container may have too many changes'
           : 'Could not load filesystem diff';
     } finally {
-      loading = false;
+      if (!signal.aborted) {
+        loading = false;
+      }
     }
   }
 
   $effect(() => {
-    containerId;
-    fetchDiff();
+    const currentNode = node;
+    const controller = new AbortController();
+    fetchDiff(currentNode, controller.signal);
+    return () => controller.abort();
   });
 </script>
 

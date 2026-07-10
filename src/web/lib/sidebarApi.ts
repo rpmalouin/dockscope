@@ -31,6 +31,31 @@ interface SidebarNodeDataOptions {
   signal?: AbortSignal;
 }
 
+export type ContainerTarget = Pick<ServiceNode, 'id' | 'containerId' | 'host'> | string;
+
+export function containerApiUrl(
+  target: ContainerTarget,
+  suffix = '',
+  params: Record<string, string | boolean | number | undefined> = {},
+): string {
+  const containerId = typeof target === 'string' ? target : target.containerId;
+  const search = new URLSearchParams();
+
+  if (typeof target !== 'string') {
+    search.set('host', target.host || 'local');
+    search.set('nodeId', target.id);
+  }
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) {
+      search.set(key, String(value));
+    }
+  }
+
+  const qs = search.toString();
+  return `/api/containers/${encodeURIComponent(containerId)}${suffix}${qs ? `?${qs}` : ''}`;
+}
+
 async function fallbackUnlessAborted<T>(request: Promise<T>, fallback: T): Promise<T> {
   try {
     return await request;
@@ -76,19 +101,19 @@ export function kubernetesActionPastTense(action: KubernetesUiAction): string {
 }
 
 export function runContainerAction(
-  containerId: string,
+  target: ContainerTarget,
   action: ContainerUiAction,
   init: RequestInit = {},
 ): Promise<OkResponse> {
-  return postJson<OkResponse>(`/api/containers/${containerId}/${action}`, undefined, init);
+  return postJson<OkResponse>(containerApiUrl(target, `/${action}`), undefined, init);
 }
 
 export function removeContainer(
-  containerId: string,
+  target: ContainerTarget,
   withVolumes: boolean,
   init: RequestInit = {},
 ): Promise<OkResponse> {
-  return deleteJson<OkResponse>(`/api/containers/${containerId}?volumes=${withVolumes}`, init);
+  return deleteJson<OkResponse>(containerApiUrl(target, '', { volumes: withVolumes }), init);
 }
 
 export function runKubernetesAction(
@@ -120,21 +145,15 @@ export function loadDockerSidebarData(
 ): Promise<SidebarNodeData> {
   const init = signal ? { signal } : {};
   const inspect = fallbackUnlessAborted(
-    getJson<ContainerInspect>(`/api/containers/${node.containerId}/inspect`, init),
+    getJson<ContainerInspect>(containerApiUrl(node, '/inspect'), init),
     null,
   );
 
   if (node.status === 'running') {
     return Promise.all([
-      fallbackUnlessAborted(
-        getJson<ContainerStats>(`/api/containers/${node.containerId}/stats`, init),
-        null,
-      ),
+      fallbackUnlessAborted(getJson<ContainerStats>(containerApiUrl(node, '/stats'), init), null),
       inspect,
-      fallbackUnlessAborted(
-        getJson<MetricPoint[]>(`/api/containers/${node.containerId}/history`, init),
-        [],
-      ),
+      fallbackUnlessAborted(getJson<MetricPoint[]>(containerApiUrl(node, '/history'), init), []),
     ]).then(([stats, inspect, history]) => ({
       stats,
       inspect,
@@ -145,7 +164,7 @@ export function loadDockerSidebarData(
 
   const diagnostic = loadDiagnostic
     ? fallbackUnlessAborted(
-        getJson<CrashDiagnostic | null>(`/api/containers/${node.containerId}/diagnostic`, init),
+        getJson<CrashDiagnostic | null>(containerApiUrl(node, '/diagnostic'), init),
         null,
       )
     : Promise.resolve(null);

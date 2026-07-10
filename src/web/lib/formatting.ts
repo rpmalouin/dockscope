@@ -26,13 +26,17 @@ export function formatDate(iso: string): string {
 }
 
 export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes)) {
+    return 'n/a';
+  }
   if (bytes === 0) {
     return '0 B';
   }
   const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const absBytes = Math.abs(bytes);
+  const i = Math.min(Math.floor(Math.log(absBytes) / Math.log(k)), sizes.length - 1);
+  return `${((bytes < 0 ? -absBytes : absBytes) / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
 }
 
 export function formatTime(timestamp: number): string {

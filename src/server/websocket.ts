@@ -1,8 +1,10 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import { createExecSession, streamContainerLogs } from '../docker/client.js';
+import { getHost } from '../docker/hosts.js';
 import type { GraphData } from '../types.js';
 import { parseInboundWSMessage } from './wsMessages.js';
 import type { InboundWSMessage } from './wsMessages.js';
+import type Dockerode from 'dockerode';
 
 type WSHandler<T extends InboundWSMessage = InboundWSMessage> = (
   ws: WebSocket,
@@ -20,6 +22,23 @@ export function setupWebSocketHandlers(wss: WebSocketServer, opts: WebSocketOpti
   const clientLogStreams = new Map<WebSocket, () => void>();
   const clientExecStreams = new Map<WebSocket, NodeJS.ReadWriteStream>();
 
+  function sendError(ws: WebSocket, message: string) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'error', data: { message } }));
+    }
+  }
+
+  function dockerClientForHost(hostName?: string): Dockerode | undefined {
+    if (!hostName) {
+      return undefined;
+    }
+    const host = getHost(hostName);
+    if (!host) {
+      throw new Error(`Unknown host: ${hostName}`);
+    }
+    return host.client;
+  }
+
   function stopLogStream(ws: WebSocket) {
     clientLogStreams.get(ws)?.();
     clientLogStreams.delete(ws);
@@ -36,6 +55,7 @@ export function setupWebSocketHandlers(wss: WebSocketServer, opts: WebSocketOpti
   const wsHandlers: WSHandlers = {
     subscribe_logs: (ws, msg) => {
       stopLogStream(ws);
+      const client = dockerClientForHost(msg.data.host);
       const stop = streamContainerLogs(
         msg.data.containerId,
         (text) => {
@@ -49,15 +69,9 @@ export function setupWebSocketHandlers(wss: WebSocketServer, opts: WebSocketOpti
           }
         },
         (err) => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(
-              JSON.stringify({
-                type: 'error',
-                data: { message: `Log stream error: ${err.message}` },
-              }),
-            );
-          }
+          sendError(ws, `Log stream error: ${err.message}`);
         },
+        client,
       );
       clientLogStreams.set(ws, stop);
     },
@@ -68,9 +82,11 @@ export function setupWebSocketHandlers(wss: WebSocketServer, opts: WebSocketOpti
       stopExecStream(ws);
 
       try {
+        const client = dockerClientForHost(msg.data.host);
         const { stream: execStream } = await createExecSession(
           msg.data.containerId,
           msg.data.cmd || ['/bin/sh'],
+          client,
         );
         clientExecStreams.set(ws, execStream);
 
@@ -89,12 +105,13 @@ export function setupWebSocketHandlers(wss: WebSocketServer, opts: WebSocketOpti
           }
           clientExecStreams.delete(ws);
         });
+
+        execStream.on('error', (err: Error) => {
+          sendError(ws, `Exec stream error: ${err.message}`);
+          clientExecStreams.delete(ws);
+        });
       } catch (err: any) {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(
-            JSON.stringify({ type: 'error', data: { message: `Exec failed: ${err.message}` } }),
-          );
-        }
+        sendError(ws, `Exec failed: ${err.message}`);
       }
     },
     exec_input: (ws, msg) => {
@@ -123,8 +140,8 @@ export function setupWebSocketHandlers(wss: WebSocketServer, opts: WebSocketOpti
         }
 
         await (wsHandlers[msg.type] as WSHandler)(ws, msg);
-      } catch {
-        /* ignore */
+      } catch (err: any) {
+        sendError(ws, err?.message || 'WebSocket command failed');
       }
     });
 

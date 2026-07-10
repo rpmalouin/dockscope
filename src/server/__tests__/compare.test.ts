@@ -144,6 +144,17 @@ describe('compareEnvironments', () => {
     });
   });
 
+  it('labels missing memory limits as no limit', () => {
+    const a = makeNode({ name: 'web', memoryLimit: 0 });
+    const b = makeNode({ name: 'web', memoryLimit: 536870912 });
+    const result = compareEnvironments(makeGraph([a]), makeGraph([b]));
+    expect(result.matched[0].diffs).toContainEqual({
+      field: 'Memory Limit',
+      hostA: 'No limit',
+      hostB: '512 MB',
+    });
+  });
+
   it('matches services by project/name for compose projects', () => {
     const a = makeNode({ name: 'web', project: 'myapp' });
     const b = makeNode({ name: 'web', project: 'myapp' });

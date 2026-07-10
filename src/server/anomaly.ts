@@ -21,17 +21,23 @@ export function checkAnomaly(
   value: number,
   history: number[],
 ): { median: number; threshold: number } | null {
-  if (history.length < ANOMALY_MIN_SAMPLES) {
+  if (!Number.isFinite(value) || value < 0) {
     return null;
   }
-  if (value > 1000) {
+
+  const finiteHistory = history.filter((v) => Number.isFinite(v) && v >= 0);
+  if (finiteHistory.length < ANOMALY_MIN_SAMPLES) {
+    return null;
+  }
+
+  if (metric === 'memory' && value > 1000) {
     return null;
   } // Sanity: not a percentage
   if (value < (ANOMALY_MIN_ABS[metric] || 0)) {
     return null;
   }
 
-  const sorted = [...history].sort((a, b) => a - b);
+  const sorted = finiteHistory.sort((a, b) => a - b);
   const q1 = percentile(sorted, 0.25);
   const q3 = percentile(sorted, 0.75);
   const iqr = q3 - q1;

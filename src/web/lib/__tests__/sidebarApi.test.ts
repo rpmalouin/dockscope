@@ -8,6 +8,7 @@ import {
   removeContainer,
   runContainerAction,
   runKubernetesAction,
+  containerApiUrl,
 } from '../sidebarApi';
 
 const originalFetch = globalThis.fetch;
@@ -85,17 +86,32 @@ describe('sidebar API helpers', () => {
     );
   });
 
+  it('adds host and node context for node-scoped container URLs', () => {
+    const node = makeNode({
+      id: 'remote-a:abcdef123456',
+      host: 'remote-a',
+      containerId: 'abcdef1234567890',
+    });
+
+    expect(containerApiUrl(node, '/stats')).toBe(
+      '/api/containers/abcdef1234567890/stats?host=remote-a&nodeId=remote-a%3Aabcdef123456',
+    );
+    expect(containerApiUrl(node, '', { volumes: true })).toBe(
+      '/api/containers/abcdef1234567890?host=remote-a&nodeId=remote-a%3Aabcdef123456&volumes=true',
+    );
+  });
+
   it('loads running container sidebar data without fetching diagnostics', async () => {
     const node = makeNode({ id: 'abcdef123456', status: 'running' });
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
-      if (url.endsWith('/stats')) {
+      if (url.includes('/stats?')) {
         return jsonResponse({ id: node.id, cpu: 12 });
       }
-      if (url.endsWith('/history')) {
+      if (url.includes('/history?')) {
         return jsonResponse([{ cpu: 12, memory: 20, time: 100 }]);
       }
-      if (url.endsWith('/inspect')) {
+      if (url.includes('/inspect?')) {
         return jsonResponse({ id: node.id, env: [] });
       }
       throw new Error(`Unexpected request: ${url}`);
@@ -107,19 +123,19 @@ describe('sidebar API helpers', () => {
     expect(data.history).toHaveLength(1);
     expect(data.inspect?.id).toBe(node.id);
     expect(data.diagnostic).toBeNull();
-    expect(vi.mocked(globalThis.fetch).mock.calls.map(([url]) => String(url))).not.toContain(
-      `/api/containers/${node.id}/diagnostic`,
-    );
+    expect(
+      vi.mocked(globalThis.fetch).mock.calls.some(([url]) => String(url).includes('/diagnostic')),
+    ).toBe(false);
   });
 
   it('loads stopped container diagnostics only when requested', async () => {
     const node = makeNode({ id: 'abcdef123456', status: 'exited' });
     globalThis.fetch = vi.fn(async (input) => {
       const url = String(input);
-      if (url.endsWith('/inspect')) {
+      if (url.includes('/inspect?')) {
         return jsonResponse({ id: node.id, env: [] });
       }
-      if (url.endsWith('/diagnostic')) {
+      if (url.includes('/diagnostic?')) {
         return jsonResponse({ containerId: node.id, cause: 'Exited' });
       }
       throw new Error(`Unexpected request: ${url}`);

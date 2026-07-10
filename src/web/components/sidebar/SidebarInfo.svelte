@@ -19,9 +19,29 @@
   const docker = getDockerState();
   let netColorMap = $derived(buildNetworkColorMap(docker.graph.links));
 
-  let memPercent = $derived(stats ? ((stats.memory / stats.memoryLimit) * 100).toFixed(1) : '0');
+  let hasMemoryLimit = $derived(Boolean(stats && stats.memoryLimit > 0));
+  let memPercentValue = $derived(
+    stats && hasMemoryLimit ? (stats.memory / stats.memoryLimit) * 100 : null,
+  );
+  let memoryFillWidth = $derived(
+    memPercentValue === null ? 0 : Math.min(Math.max(memPercentValue, 0), 100),
+  );
+  let memPercent = $derived(memPercentValue === null ? 'n/a' : memPercentValue.toFixed(1));
+  let memoryUsageLabel = $derived(
+    stats
+      ? hasMemoryLimit
+        ? `${formatBytes(stats.memory)} / ${formatBytes(stats.memoryLimit)}`
+        : `${formatBytes(stats.memory)} used`
+      : '',
+  );
   let cpuHistory = $derived(history.map((p) => p.cpu));
-  let memHistory = $derived(history.map((p) => (p.memory / (stats?.memoryLimit || 1)) * 100));
+  let memHistory = $derived(
+    stats && hasMemoryLimit
+      ? history
+          .map((p) => (p.memory / stats.memoryLimit) * 100)
+          .filter((value) => Number.isFinite(value))
+      : [],
+  );
 </script>
 
 <div class="sidebar-content">
@@ -114,15 +134,15 @@
       <span class="field-label">Memory</span>
       <div class="gauge">
         <div class="progress-bar">
-          <div class="progress-fill memory" style="width: {memPercent}%"></div>
+          <div class="progress-fill memory" style="width: {memoryFillWidth}%"></div>
         </div>
-        <span class="gauge-value">{memPercent}%</span>
+        <span class="gauge-value">{hasMemoryLimit ? `${memPercent}%` : 'No limit'}</span>
       </div>
       <span
         class="mono"
         style="font-size: 10px; color: var(--text-dim); margin-top: 4px; display: block;"
       >
-        {formatBytes(stats.memory)} / {formatBytes(stats.memoryLimit)}
+        {memoryUsageLabel}
       </span>
     </div>
 
@@ -137,6 +157,8 @@
       <div class="info-section sparkline-row">
         <Sparkline data={cpuHistory} color="#00e4ff" label="CPU History" />
       </div>
+    {/if}
+    {#if memHistory.length >= 2}
       <div class="info-section sparkline-row">
         <Sparkline data={memHistory} color="#a855f7" label="Memory History" />
       </div>

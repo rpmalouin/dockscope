@@ -23,6 +23,15 @@ describe('formatBytes', () => {
   it('formats gigabytes', () => {
     expect(formatBytes(1073741824)).toBe('1.0 GB');
   });
+
+  it('formats larger units without overflowing the unit list', () => {
+    expect(formatBytes(1099511627776)).toBe('1.0 TB');
+    expect(formatBytes(1125899906842624)).toBe('1.0 PB');
+  });
+
+  it('formats non-finite values as unavailable', () => {
+    expect(formatBytes(Infinity)).toBe('n/a');
+  });
 });
 
 describe('formatGB', () => {

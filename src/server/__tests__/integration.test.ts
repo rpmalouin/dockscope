@@ -186,6 +186,7 @@ describe('server integration', () => {
       '123456789abc',
       expect.any(Function),
       expect.any(Function),
+      undefined,
     );
 
     requiredCallback(pushLog)('hello from container\n');

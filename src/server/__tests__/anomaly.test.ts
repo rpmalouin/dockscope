@@ -48,6 +48,12 @@ describe('checkAnomaly', () => {
     expect(checkAnomaly('memory', 113999872, history)).toBeNull();
   });
 
+  it('allows valid multi-core CPU percentages above 1000', () => {
+    const history = makeHistory(Array(ANOMALY_MIN_SAMPLES).fill(500));
+    const result = checkAnomaly('cpu', 1200, history);
+    expect(result).not.toBeNull();
+  });
+
   it('detects a CPU spike above IQR threshold', () => {
     // Baseline: stable around 20%, then spike to 95%
     const history = makeHistory(Array(ANOMALY_MIN_SAMPLES).fill(20));

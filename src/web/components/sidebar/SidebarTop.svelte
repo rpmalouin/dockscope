@@ -1,46 +1,60 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import type { ContainerTopResult } from '../../../types';
+  import type { ContainerTopResult, ServiceNode } from '../../../types';
+  import { getJson, isAbortError } from '../../lib/api';
+  import { containerApiUrl } from '../../lib/sidebarApi';
 
   interface Props {
-    containerId: string;
+    node: ServiceNode;
   }
 
-  let { containerId }: Props = $props();
+  let { node }: Props = $props();
 
   let top = $state<ContainerTopResult | null>(null);
   let error = $state('');
+  let loading = $state(false);
 
-  async function fetchTop() {
+  async function fetchTop(target: ServiceNode, signal: AbortSignal) {
+    loading = true;
     try {
-      const res = await fetch(`/api/containers/${containerId}/top`);
-      if (!res.ok) {
-        throw new Error('Not running');
-      }
-      top = await res.json();
+      top = await getJson<ContainerTopResult>(containerApiUrl(target, '/top'), { signal });
       error = '';
-    } catch {
+    } catch (err) {
+      if (isAbortError(err) || signal.aborted) {
+        return;
+      }
       top = null;
       error = 'Container must be running to view processes';
+    } finally {
+      if (!signal.aborted) {
+        loading = false;
+      }
     }
   }
 
-  onMount(() => {
-    fetchTop();
-    const interval = setInterval(fetchTop, 5000);
-    return () => clearInterval(interval);
-  });
-
   $effect(() => {
-    containerId;
-    fetchTop();
+    const currentNode = node;
+    let controller: AbortController | null = null;
+
+    function refresh() {
+      controller?.abort();
+      controller = new AbortController();
+      fetchTop(currentNode, controller.signal);
+    }
+
+    refresh();
+    const interval = setInterval(refresh, 5000);
+
+    return () => {
+      clearInterval(interval);
+      controller?.abort();
+    };
   });
 </script>
 
 <div class="sidebar-content">
   {#if error}
     <div class="top-empty">{error}</div>
-  {:else if !top}
+  {:else if loading || !top}
     <div class="top-empty">Loading...</div>
   {:else}
     <div class="top-table-wrap">

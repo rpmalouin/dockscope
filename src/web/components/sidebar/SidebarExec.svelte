@@ -2,13 +2,14 @@
   import { onMount, onDestroy } from 'svelte';
   import type { Terminal } from '@xterm/xterm';
   import type { FitAddon } from '@xterm/addon-fit';
+  import type { ServiceNode } from '../../../types';
   import '@xterm/xterm/css/xterm.css';
 
   interface Props {
-    containerId: string;
+    node: ServiceNode;
   }
 
-  let { containerId }: Props = $props();
+  let { node }: Props = $props();
 
   let termEl: HTMLDivElement;
   let terminal: Terminal | null = null;
@@ -17,6 +18,7 @@
   let connected = $state(false);
   let connecting = $state(false);
   let terminalLoading = $state(false);
+  let activeNodeId = '';
 
   function isSocketActive(socket: WebSocket | null): boolean {
     return socket?.readyState === WebSocket.CONNECTING || socket?.readyState === WebSocket.OPEN;
@@ -38,7 +40,12 @@
       }
       connected = true;
       connecting = false;
-      socket.send(JSON.stringify({ type: 'exec_start', data: { containerId } }));
+      socket.send(
+        JSON.stringify({
+          type: 'exec_start',
+          data: { containerId: node.containerId, host: node.host || 'local' },
+        }),
+      );
     };
 
     socket.onmessage = (e) => {
@@ -84,6 +91,18 @@
     connected = false;
     connecting = false;
   }
+
+  $effect(() => {
+    const currentNodeId = node.id;
+    if (activeNodeId && activeNodeId !== currentNodeId) {
+      const shouldReconnect = connected || connecting || isSocketActive(ws);
+      disconnect();
+      if (shouldReconnect && !terminalLoading) {
+        connect();
+      }
+    }
+    activeNodeId = currentNodeId;
+  });
 
   onMount(() => {
     let observer: ResizeObserver | null = null;

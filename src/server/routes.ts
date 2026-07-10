@@ -1,4 +1,5 @@
 import type { Express, Request, Response } from 'express';
+import type Dockerode from 'dockerode';
 import {
   buildGraph,
   checkConnection,
@@ -23,6 +24,17 @@ import { shortId } from '../utils.js';
 import { PKG_VERSION, fetchLatestVersion } from '../version.js';
 
 const VALID_ID = /^[a-f0-9]{12,64}$/i;
+const VALID_NODE_ID = /^([^\s:]+:)?[a-f0-9]{12,64}$/i;
+
+class RouteError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'RouteError';
+  }
+}
 
 /** Wrap async route handler with automatic error response */
 function asyncRoute(handler: (req: Request, res: Response) => Promise<void>) {
@@ -30,7 +42,8 @@ function asyncRoute(handler: (req: Request, res: Response) => Promise<void>) {
     try {
       await handler(req, res);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      const status = err instanceof RouteError ? err.status : 500;
+      res.status(status).json({ error: err.message });
     }
   };
 }
@@ -38,6 +51,32 @@ function asyncRoute(handler: (req: Request, res: Response) => Promise<void>) {
 /** Get container ID param as string */
 function getId(req: Request): string {
   return req.params.id as string;
+}
+
+function getStringQuery(req: Request, key: string): string | undefined {
+  const value = req.query[key];
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function getRouteDockerClient(req: Request): Dockerode | undefined {
+  const hostName = getStringQuery(req, 'host');
+  if (!hostName) {
+    return undefined;
+  }
+
+  const host = getHost(hostName);
+  if (!host) {
+    throw new RouteError(404, `Unknown host: ${hostName}`);
+  }
+  return host.client;
+}
+
+function getMetricNodeId(req: Request): string {
+  const nodeId = getStringQuery(req, 'nodeId');
+  if (nodeId && VALID_NODE_ID.test(nodeId)) {
+    return nodeId;
+  }
+  return shortId(getId(req));
 }
 
 export function setupRoutes(
@@ -65,14 +104,16 @@ export function setupRoutes(
     '/api/containers/:id/logs',
     asyncRoute(async (req, res) => {
       const tail = parseInt(req.query.tail as string) || 200;
-      res.json({ logs: await getContainerLogs(getId(req), tail) });
+      res.json({ logs: await getContainerLogs(getId(req), tail, getRouteDockerClient(req)) });
     }),
   );
 
   app.get(
     '/api/containers/:id/stats',
     asyncRoute(async (req, res) => {
-      res.json(await getContainerStats(getId(req)));
+      const nodeId = getMetricNodeId(req);
+      const stats = await getContainerStats(getId(req), getRouteDockerClient(req), nodeId);
+      res.json({ ...stats, id: nodeId });
     }),
   );
 
@@ -87,7 +128,7 @@ export function setupRoutes(
     app.post(
       `/api/containers/:id/${action}`,
       asyncRoute(async (req, res) => {
-        await containerAction(getId(req), action);
+        await containerAction(getId(req), action, getRouteDockerClient(req));
         res.json({ ok: true });
       }),
     );
@@ -96,7 +137,7 @@ export function setupRoutes(
   app.delete(
     '/api/containers/:id',
     asyncRoute(async (req, res) => {
-      await removeContainer(getId(req), req.query.volumes === 'true');
+      await removeContainer(getId(req), req.query.volumes === 'true', getRouteDockerClient(req));
       res.json({ ok: true });
     }),
   );
@@ -104,32 +145,34 @@ export function setupRoutes(
   app.get(
     '/api/containers/:id/top',
     asyncRoute(async (req, res) => {
-      res.json(await getContainerTop(getId(req)));
+      res.json(await getContainerTop(getId(req), getRouteDockerClient(req)));
     }),
   );
 
   app.get(
     '/api/containers/:id/diff',
     asyncRoute(async (req, res) => {
-      res.json(await getContainerDiff(getId(req)));
+      res.json(await getContainerDiff(getId(req), getRouteDockerClient(req)));
     }),
   );
 
   app.get(
     '/api/containers/:id/inspect',
     asyncRoute(async (req, res) => {
-      res.json(await inspectContainer(getId(req)));
+      res.json(await inspectContainer(getId(req), getRouteDockerClient(req)));
     }),
   );
 
   app.get('/api/containers/:id/history', (req, res) => {
-    res.json(metricHistory.get(shortId(getId(req))) || []);
+    const nodeId = getMetricNodeId(req);
+    res.json(metricHistory.get(nodeId) || metricHistory.get(shortId(getId(req))) || []);
   });
 
   app.get(
     '/api/containers/:id/diagnostic',
     asyncRoute(async (req, res) => {
-      res.json((await diagnoseCrash(getId(req))) || null);
+      const diagnostic = await diagnoseCrash(getId(req), getRouteDockerClient(req));
+      res.json(diagnostic ? { ...diagnostic, containerId: getMetricNodeId(req) } : null);
     }),
   );
 

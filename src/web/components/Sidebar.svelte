@@ -84,7 +84,7 @@
     const target = node;
     actionPending = true;
     try {
-      await runContainerAction(target.containerId, action);
+      await runContainerAction(target, action);
       addToast(`Container ${containerActionPastTense(action)}`, 'success');
     } catch (error) {
       if (!isAbortError(error)) {
@@ -102,7 +102,7 @@
     const target = node;
     actionPending = true;
     try {
-      await removeContainer(target.containerId, withVolumes);
+      await removeContainer(target, withVolumes);
       addToast(`Container removed${withVolumes ? ' with volumes' : ''}`, 'success');
       onClose();
     } catch (error) {
@@ -254,6 +254,7 @@
     const tab = activeTab;
     const currentNode = node;
     const containerId = currentNode?.containerId ?? null;
+    const host = currentNode?.host ?? 'local';
     const runtime = currentNode?.runtime;
     const kind = currentNode?.kind;
     const replayActive = docker.replayMode;
@@ -263,7 +264,7 @@
         tab === 'logs' && containerId !== null && runtime !== 'kubernetes' && !replayActive;
 
       if (shouldStreamDockerLogs) {
-        subscribeLogs(containerId);
+        subscribeLogs(containerId, host);
       } else {
         unsubscribeLogs();
       }
@@ -396,11 +397,11 @@
         placeholder={isKubernetesNode ? 'Loading pod logs...' : 'Connecting to log stream...'}
       />
     {:else if activeTab === 'top'}
-      <SidebarTop containerId={node.containerId} />
+      <SidebarTop {node} />
     {:else if activeTab === 'diff'}
-      <SidebarDiff containerId={node.containerId} />
+      <SidebarDiff {node} />
     {:else if activeTab === 'exec'}
-      <SidebarExec containerId={node.containerId} />
+      <SidebarExec {node} />
     {/if}
   {/if}
 </div>

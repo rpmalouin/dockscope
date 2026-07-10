@@ -26,6 +26,7 @@ let events = $state<DockerEvent[]>([]);
 let connected = $state(false);
 let streamingLogs = $state('');
 let streamingLogContainerId = $state<string | null>(null);
+let streamingLogHost = $state<string | null>(null);
 let composeEnabled = $state(true);
 let anomalies = $state<Map<string, Anomaly>>(new Map());
 let diagnostics = $state<Map<string, CrashDiagnostic>>(new Map());
@@ -64,7 +65,10 @@ function scheduleReconnect() {
 function sendLogSubscription() {
   if (streamingLogContainerId && ws?.readyState === WebSocket.OPEN) {
     ws.send(
-      JSON.stringify({ type: 'subscribe_logs', data: { containerId: streamingLogContainerId } }),
+      JSON.stringify({
+        type: 'subscribe_logs',
+        data: { containerId: streamingLogContainerId, host: streamingLogHost || 'local' },
+      }),
     );
   }
 }
@@ -74,7 +78,7 @@ function refreshLogSubscription() {
   if (!containerId) {
     return;
   }
-  subscribeLogs(containerId);
+  subscribeLogs(containerId, streamingLogHost || 'local');
 }
 
 function setGraphData(nodes: ServiceNode[], links: ServiceLink[]) {
@@ -275,9 +279,10 @@ export function initDocker() {
   };
 }
 
-export function subscribeLogs(containerId: string) {
+export function subscribeLogs(containerId: string, host = 'local') {
   unsubscribeLogs();
   streamingLogContainerId = containerId;
+  streamingLogHost = host;
   streamingLogs = '';
   sendLogSubscription();
 }
@@ -287,6 +292,7 @@ export function unsubscribeLogs() {
     ws.send(JSON.stringify({ type: 'unsubscribe_logs' }));
   }
   streamingLogContainerId = null;
+  streamingLogHost = null;
 }
 
 const dismissedDiagnostics = new Set<string>();
