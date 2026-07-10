@@ -12,7 +12,7 @@ function parseDockerHost(host: string): Dockerode.DockerOptions {
     case 'https:':
       return { host: url.hostname, port: parseInt(url.port, 10) || 2376, protocol: 'https' };
     case 'ssh:':
-      return { host, protocol: 'ssh' as any };
+      return { host, protocol: 'ssh' };
     case 'unix:':
       return { socketPath: url.pathname };
     default:

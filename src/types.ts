@@ -35,8 +35,8 @@ export interface ServiceNode {
 }
 
 export interface ServiceLink {
-  source: string;
-  target: string;
+  source: string | { id: string };
+  target: string | { id: string };
   type: 'depends_on' | 'network' | 'kubernetes';
   label?: string;
 }

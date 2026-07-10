@@ -13,8 +13,17 @@ import { getContainerStats as _getStats } from './metrics.js';
 import { getDefaultDockerClient } from './connection.js';
 import type Dockerode from 'dockerode';
 
+interface DockerDiffEntry {
+  Kind?: number;
+  Path?: string;
+}
+
 function dockerClient(client?: Dockerode): Dockerode {
   return client || getDefaultDockerClient();
+}
+
+function isDockerDiffEntry(value: unknown): value is DockerDiffEntry {
+  return typeof value === 'object' && value !== null;
 }
 
 export const getContainerStats = (
@@ -84,7 +93,7 @@ export async function createExecSession(
   return {
     stream,
     inspect: () =>
-      exec.inspect().then((info: any) => ({ Running: info.Running, ExitCode: info.ExitCode })),
+      exec.inspect().then((info) => ({ Running: info.Running, ExitCode: info.ExitCode ?? 0 })),
   };
 }
 
@@ -102,10 +111,13 @@ export async function getContainerDiff(
   if (!diff) {
     return [];
   }
-  return diff.map((d: any) => ({
-    kind: DIFF_KIND_MAP[d.Kind] || 'C',
-    path: d.Path,
-  }));
+  return (Array.isArray(diff) ? diff.filter(isDockerDiffEntry) : []).map((d) => {
+    const kind = d.Kind === undefined ? 'C' : DIFF_KIND_MAP[d.Kind] || 'C';
+    return {
+      kind,
+      path: d.Path || '',
+    };
+  });
 }
 
 export async function inspectContainer(
@@ -118,7 +130,7 @@ export async function inspectContainer(
     id: shortId(info.Id),
     env: info.Config.Env || [],
     labels: info.Config.Labels || {},
-    mounts: (info.Mounts || []).map((m: any) => ({
+    mounts: (info.Mounts || []).map((m) => ({
       type: m.Type || 'bind',
       source: m.Source || '',
       destination: m.Destination || '',

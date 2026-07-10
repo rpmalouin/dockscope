@@ -21,7 +21,7 @@ import { addToast } from './toast.svelte';
 export { addToast };
 
 let graph = $state<GraphData>({ nodes: [], links: [] });
-let nodeIndex = new Map<string, any>();
+let nodeIndex = new Map<string, ServiceNode>();
 let events = $state<DockerEvent[]>([]);
 let connected = $state(false);
 let streamingLogs = $state('');
@@ -84,7 +84,7 @@ function refreshLogSubscription() {
 function setGraphData(nodes: ServiceNode[], links: ServiceLink[]) {
   const nodeIds = new Set(nodes.map((node) => node.id));
   graph = { nodes, links: pruneLinksToExistingNodes(links, nodeIds) };
-  nodeIndex = new Map(nodes.map((node: any) => [node.id, node]));
+  nodeIndex = new Map(nodes.map((node) => [node.id, node]));
 }
 
 function scheduleRolloutPrune() {

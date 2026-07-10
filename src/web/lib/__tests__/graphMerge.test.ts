@@ -11,6 +11,8 @@ import {
 
 const NOW = 1_000_000;
 
+type PositionedNode = ServiceNode & { x?: number; y?: number };
+
 function makeNode(overrides: Partial<ServiceNode> & { id: string }): ServiceNode {
   return {
     name: overrides.id,
@@ -45,7 +47,7 @@ function graphOf(nodes: ServiceNode[], links: ServiceLink[] = []): GraphData {
 
 describe('mergeGraphData', () => {
   it('keeps the existing node object identity so simulation positions survive', () => {
-    const existing = makeNode({ id: 'a' }) as any;
+    const existing: PositionedNode = makeNode({ id: 'a' });
     existing.x = 42;
     existing.y = -7;
 
@@ -57,7 +59,7 @@ describe('mergeGraphData', () => {
 
     expect(merged.nodes[0]).toBe(existing);
     expect(merged.nodes[0].status).toBe('exited');
-    expect((merged.nodes[0] as any).x).toBe(42);
+    expect((merged.nodes[0] as PositionedNode).x).toBe(42);
   });
 
   it('adds new nodes and drops docker nodes missing from the incoming graph', () => {
@@ -127,7 +129,7 @@ describe('mergeGraphData', () => {
       graphOf(
         [a, b],
         [
-          { source: { id: 'a' } as any, target: { id: 'b' } as any, type: 'network', label: 'net' },
+          { source: { id: 'a' }, target: { id: 'b' }, type: 'network', label: 'net' },
           { source: 'a', target: 'b', type: 'network', label: 'net' },
         ],
       ),
@@ -165,7 +167,7 @@ describe('rollout expiry helpers', () => {
 
 describe('link helpers', () => {
   it('normalizeLink resolves object endpoints', () => {
-    expect(normalizeLink({ source: { id: 'x' } as any, target: 'y', type: 'depends_on' })).toEqual({
+    expect(normalizeLink({ source: { id: 'x' }, target: 'y', type: 'depends_on' })).toEqual({
       source: 'x',
       target: 'y',
       type: 'depends_on',

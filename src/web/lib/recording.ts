@@ -31,41 +31,39 @@ export const MAX_RECORDING_FRAMES = 50_000;
 
 export const REPLAY_SPEEDS = [1, 2, 4, 8] as const;
 
-const NODE_FIELDS = [
-  'id',
-  'name',
-  'fullName',
-  'project',
-  'host',
-  'runtime',
-  'kind',
-  'namespace',
-  'containerId',
-  'image',
-  'status',
-  'health',
-  'ports',
-  'networks',
-  'volumeCount',
-  'cpu',
-  'memory',
-  'memoryLimit',
-  'networkRx',
-  'networkTx',
-  'networkRxRate',
-  'networkTxRate',
-] as const;
-
 /** Strip d3/Three.js runtime fields (x, y, z, __threeObj, ...) which are cyclic */
 export function sanitizeNode(node: ServiceNode): ServiceNode {
-  const clean = {} as Record<string, unknown>;
-  for (const field of NODE_FIELDS) {
-    const value = node[field];
-    if (value !== undefined) {
-      clean[field] = Array.isArray(value) ? [...value] : value;
-    }
+  const clean: ServiceNode = {
+    id: node.id,
+    name: node.name,
+    fullName: node.fullName,
+    project: node.project,
+    host: node.host,
+    containerId: node.containerId,
+    image: node.image,
+    status: node.status,
+    health: node.health,
+    ports: [...node.ports],
+    networks: [...node.networks],
+    volumeCount: node.volumeCount,
+    cpu: node.cpu,
+    memory: node.memory,
+    memoryLimit: node.memoryLimit,
+    networkRx: node.networkRx,
+    networkTx: node.networkTx,
+    networkRxRate: node.networkRxRate,
+    networkTxRate: node.networkTxRate,
+  };
+  if (node.runtime !== undefined) {
+    clean.runtime = node.runtime;
   }
-  return clean as unknown as ServiceNode;
+  if (node.kind !== undefined) {
+    clean.kind = node.kind;
+  }
+  if (node.namespace !== undefined) {
+    clean.namespace = node.namespace;
+  }
+  return clean;
 }
 
 /** The force graph replaces link endpoints with node object references — restore plain IDs */

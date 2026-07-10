@@ -28,13 +28,14 @@
       });
       diff = Array.isArray(data) ? data : [];
       error = '';
-    } catch (e: any) {
+    } catch (e) {
       if (isAbortError(e) && signal.aborted) {
         return;
       }
+      const err = e instanceof Error ? e : new Error(String(e));
       diff = [];
       error =
-        e?.name === 'TimeoutError' || e?.message?.includes('timed out')
+        err.name === 'TimeoutError' || err.message.includes('timed out')
           ? 'Diff timed out — container may have too many changes'
           : 'Could not load filesystem diff';
     } finally {

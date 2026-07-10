@@ -5,7 +5,7 @@ const W = GRAPH.importance;
 
 function getLinkId(link: ServiceLink, end: 'source' | 'target'): string {
   const v = link[end];
-  return typeof v === 'object' ? (v as any).id : v;
+  return typeof v === 'object' ? v.id : v;
 }
 
 export function computeImportance(nodes: ServiceNode[], links: ServiceLink[]): Map<string, number> {

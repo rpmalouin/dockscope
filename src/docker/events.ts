@@ -14,6 +14,11 @@ export function watchEvents(
   let stream: NodeJS.ReadableStream | null = null;
   let closed = false;
 
+  const destroyStream = (target: NodeJS.ReadableStream | null | undefined) => {
+    const destroy = (target as (NodeJS.ReadableStream & { destroy?: () => void }) | null)?.destroy;
+    destroy?.call(target);
+  };
+
   const notifyClosed = () => {
     if (!destroyed && !closed) {
       closed = true;
@@ -28,7 +33,7 @@ export function watchEvents(
       return;
     }
     if (destroyed) {
-      (eventStream as any).destroy?.();
+      destroyStream(eventStream);
       return;
     }
     stream = eventStream;
@@ -65,6 +70,6 @@ export function watchEvents(
 
   return () => {
     destroyed = true;
-    (stream as any)?.destroy?.();
+    destroyStream(stream);
   };
 }

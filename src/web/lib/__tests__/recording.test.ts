@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { GraphData, ServiceNode } from '../../../types';
+import type { DockerEvent, GraphData, ServiceLink, ServiceNode, WSMessage } from '../../../types';
 import {
   MAX_RECORDING_FRAMES,
   RECORDABLE_TYPES,
@@ -49,9 +49,45 @@ function makeRecording(overrides: Partial<Recording> = {}): Recording {
   };
 }
 
+type RuntimeNode = ServiceNode & {
+  x?: number;
+  y?: number;
+  z?: number;
+  vx?: number;
+  __threeObj?: Record<string, unknown>;
+};
+
+function eventMessage(id: string): WSMessage {
+  const event: DockerEvent = {
+    id,
+    type: 'container',
+    action: 'start',
+    actor: id,
+    time: 1,
+    message: id,
+  };
+  return { type: 'event', data: event };
+}
+
+function statsMessage(id: string): WSMessage {
+  return {
+    type: 'stats',
+    data: {
+      id,
+      cpu: 1,
+      memory: 2,
+      memoryLimit: 3,
+      networkRx: 4,
+      networkTx: 5,
+      networkRxRate: 6,
+      networkTxRate: 7,
+    },
+  };
+}
+
 describe('sanitizeNode', () => {
   it('strips d3/Three.js runtime fields', () => {
-    const node = makeNode({ id: 'a' }) as any;
+    const node: RuntimeNode = makeNode({ id: 'a' });
     node.x = 12;
     node.y = -3;
     node.z = 44;
@@ -59,12 +95,12 @@ describe('sanitizeNode', () => {
     node.__threeObj = { cyclic: null };
     node.__threeObj.cyclic = node.__threeObj;
 
-    const clean = sanitizeNode(node) as any;
+    const clean = sanitizeNode(node);
 
     expect(clean.id).toBe('a');
-    expect(clean.x).toBeUndefined();
-    expect(clean.vx).toBeUndefined();
-    expect(clean.__threeObj).toBeUndefined();
+    expect('x' in clean).toBe(false);
+    expect('vx' in clean).toBe(false);
+    expect('__threeObj' in clean).toBe(false);
     // Must be JSON-serializable (no cycles)
     expect(() => JSON.stringify(clean)).not.toThrow();
   });
@@ -80,12 +116,12 @@ describe('sanitizeNode', () => {
 
 describe('sanitizeLink', () => {
   it('restores plain string IDs from d3 node object endpoints', () => {
-    const link = {
-      source: { id: 'a' } as any,
-      target: { id: 'b' } as any,
+    const link: ServiceLink = {
+      source: { id: 'a' },
+      target: { id: 'b' },
       type: 'network',
       label: 'backend',
-    } as any;
+    };
 
     expect(sanitizeLink(link)).toEqual({
       source: 'a',
@@ -96,19 +132,19 @@ describe('sanitizeLink', () => {
   });
 
   it('omits an undefined label', () => {
-    const link = { source: 'a', target: 'b', type: 'depends_on' } as any;
+    const link: ServiceLink = { source: 'a', target: 'b', type: 'depends_on' };
     expect('label' in sanitizeLink(link)).toBe(false);
   });
 });
 
 describe('sanitizeGraph', () => {
   it('produces a JSON-serializable graph', () => {
-    const node = makeNode({ id: 'a' }) as any;
+    const node: RuntimeNode = makeNode({ id: 'a' });
     node.__threeObj = {};
     node.__threeObj.self = node.__threeObj;
     const graph: GraphData = {
       nodes: [node],
-      links: [{ source: node, target: node, type: 'network' } as any],
+      links: [{ source: node, target: node, type: 'network' }],
     };
 
     const clean = sanitizeGraph(graph);
@@ -122,8 +158,8 @@ describe('validateRecording', () => {
   it('accepts a valid recording round-tripped through JSON', () => {
     const rec = makeRecording({
       frames: [
-        { t: 100, msg: { type: 'event', data: { id: 'x' } } as any },
-        { t: 50, msg: { type: 'stats', data: { id: 'y' } } as any },
+        { t: 100, msg: eventMessage('x') },
+        { t: 50, msg: statsMessage('y') },
       ],
     });
 
@@ -138,7 +174,9 @@ describe('validateRecording', () => {
     expect(validateRecording(null)).toBeNull();
     expect(validateRecording('hi')).toBeNull();
     expect(validateRecording({})).toBeNull();
-    expect(validateRecording(makeRecording({ version: 2 as any }))).toBeNull();
+    expect(
+      validateRecording(makeRecording({ version: 2 as unknown as Recording['version'] })),
+    ).toBeNull();
     expect(validateRecording({ ...makeRecording(), app: 'other' })).toBeNull();
   });
 
@@ -151,14 +189,15 @@ describe('validateRecording', () => {
   });
 
   it('drops malformed and non-recordable frames', () => {
+    const malformedFrames = [
+      { t: 10, msg: eventMessage('ok') },
+      { t: -5, msg: eventMessage('negative') },
+      { t: 20, msg: { type: 'log_chunk', data: {} } },
+      'garbage',
+      { t: 30 },
+    ] as unknown as Recording['frames'];
     const rec = makeRecording({
-      frames: [
-        { t: 10, msg: { type: 'event', data: {} } as any },
-        { t: -5, msg: { type: 'event', data: {} } as any },
-        { t: 20, msg: { type: 'log_chunk', data: {} } as any },
-        'garbage' as any,
-        { t: 30 } as any,
-      ],
+      frames: malformedFrames,
     });
 
     const parsed = validateRecording(JSON.parse(JSON.stringify(rec)));
@@ -170,7 +209,7 @@ describe('validateRecording', () => {
   it('extends the duration to cover the last frame', () => {
     const rec = makeRecording({
       duration: 100,
-      frames: [{ t: 900, msg: { type: 'event', data: {} } as any }],
+      frames: [{ t: 900, msg: eventMessage('late') }],
     });
 
     expect(validateRecording(JSON.parse(JSON.stringify(rec)))!.duration).toBe(900);

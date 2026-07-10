@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
+import type Dockerode from 'dockerode';
 import { watchEvents } from '../events';
 import type { DockerEvent } from '../../types';
 
@@ -11,7 +12,12 @@ describe('watchEvents', () => {
     };
     const events: DockerEvent[] = [];
 
-    const stop = watchEvents((event) => events.push(event), undefined, client as any, 'remote-a');
+    const stop = watchEvents(
+      (event) => events.push(event),
+      undefined,
+      client as unknown as Dockerode,
+      'remote-a',
+    );
 
     stream.emit(
       'data',

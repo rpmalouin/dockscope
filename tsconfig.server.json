@@ -13,6 +13,13 @@
     "declaration": true,
     "lib": ["ESNext"]
   },
-  "include": ["src/cli.ts", "src/server/**/*", "src/docker/**/*", "src/types.ts", "src/utils.ts"],
+  "include": [
+    "src/cli.ts",
+    "src/core/**/*",
+    "src/server/**/*",
+    "src/docker/**/*",
+    "src/types.ts",
+    "src/utils.ts"
+  ],
   "exclude": ["node_modules", "dist", "src/web", "src/**/__tests__"]
 }

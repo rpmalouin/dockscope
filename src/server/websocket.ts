@@ -5,6 +5,7 @@ import type { GraphData } from '../types.js';
 import { parseInboundWSMessage } from './wsMessages.js';
 import type { InboundWSMessage } from './wsMessages.js';
 import type Dockerode from 'dockerode';
+import { errorMessage } from '../utils.js';
 
 type WSHandler<T extends InboundWSMessage = InboundWSMessage> = (
   ws: WebSocket,
@@ -47,7 +48,8 @@ export function setupWebSocketHandlers(wss: WebSocketServer, opts: WebSocketOpti
   function stopExecStream(ws: WebSocket) {
     const execStream = clientExecStreams.get(ws);
     if (execStream) {
-      (execStream as any).destroy?.();
+      const destroy = (execStream as NodeJS.ReadWriteStream & { destroy?: () => void }).destroy;
+      destroy?.call(execStream);
     }
     clientExecStreams.delete(ws);
   }
@@ -110,8 +112,8 @@ export function setupWebSocketHandlers(wss: WebSocketServer, opts: WebSocketOpti
           sendError(ws, `Exec stream error: ${err.message}`);
           clientExecStreams.delete(ws);
         });
-      } catch (err: any) {
-        sendError(ws, `Exec failed: ${err.message}`);
+      } catch (err) {
+        sendError(ws, `Exec failed: ${errorMessage(err)}`);
       }
     },
     exec_input: (ws, msg) => {
@@ -140,8 +142,8 @@ export function setupWebSocketHandlers(wss: WebSocketServer, opts: WebSocketOpti
         }
 
         await (wsHandlers[msg.type] as WSHandler)(ws, msg);
-      } catch (err: any) {
-        sendError(ws, err?.message || 'WebSocket command failed');
+      } catch (err) {
+        sendError(ws, errorMessage(err) || 'WebSocket command failed');
       }
     });
 

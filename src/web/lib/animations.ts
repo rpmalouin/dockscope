@@ -11,6 +11,8 @@ import { GRAPH } from './constants';
 import { getMeta } from './nodeRenderer';
 import type { SimNode } from './simTypes';
 
+type MaterialCarrier = { material: Material | Material[] };
+
 interface PendingAnim {
   obj: Group;
   start: number;
@@ -52,6 +54,10 @@ interface RolloutExitAnim {
 const rolloutExitAnims: RolloutExitAnim[] = [];
 const rolloutExitGroups = new WeakSet<Group>();
 
+function hasMaterial(child: object): child is MaterialCarrier {
+  return 'material' in child;
+}
+
 export function addRolloutExitAnimation(group: Group): void {
   if (rolloutExitGroups.has(group)) {
     return;
@@ -60,7 +66,7 @@ export function addRolloutExitAnimation(group: Group): void {
 
   const materials: RolloutExitAnim['materials'] = [];
   group.traverse((child) => {
-    const material = (child as any).material;
+    const material = hasMaterial(child) ? child.material : undefined;
     const list = Array.isArray(material) ? material : material ? [material] : [];
     for (const mat of list) {
       if ('opacity' in mat) {

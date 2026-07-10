@@ -5,9 +5,14 @@ import { parseComposeFile } from './compose.js';
 
 const COMPOSE_FILES = ['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
 
+interface ComposeLabelContainer {
+  Id: string;
+  Labels: Record<string, string | undefined>;
+}
+
 /** Extract depends_on links from container labels (runtime) */
 export function extractDependsOnFromLabels(
-  containers: any[],
+  containers: ComposeLabelContainer[],
   nodes: ServiceNode[],
   containerProject: Map<string, string>,
 ): { links: ServiceLink[]; seen: Set<string> } {

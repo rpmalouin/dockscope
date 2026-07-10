@@ -116,8 +116,7 @@ export async function analyzeCrash(
         tail: 50,
         timestamps: false,
       });
-      const raw = Buffer.isBuffer(logBuffer) ? logBuffer : Buffer.from(logBuffer as any);
-      const text = info.Config.Tty ? raw.toString('utf-8') : demuxLogBuffer(raw);
+      const text = info.Config.Tty ? logBuffer.toString('utf-8') : demuxLogBuffer(logBuffer);
       logLines = text
         .split('\n')
         .map((l) => l.trim())

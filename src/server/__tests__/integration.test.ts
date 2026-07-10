@@ -38,6 +38,7 @@ const mocks = vi.hoisted(() => ({
   buildMultiHostGraph: vi.fn(),
   refreshHostStatus: vi.fn(),
   listDockerHosts: vi.fn(),
+  listDataSources: vi.fn(),
   initHosts: vi.fn(),
   stopWatching: vi.fn(),
 }));
@@ -70,6 +71,7 @@ vi.mock('../../docker/hosts.js', () => ({
   getHost: vi.fn(),
   initHosts: mocks.initHosts,
   listDockerHosts: mocks.listDockerHosts,
+  listDataSources: mocks.listDataSources,
   listHosts: vi.fn(() => []),
   refreshHostStatus: mocks.refreshHostStatus,
   removeHost: vi.fn(),
@@ -80,7 +82,7 @@ async function startTestServer(): Promise<ServerHandle> {
   return startServer({ port: 0, open: false });
 }
 
-function readWsMessage(ws: WebSocket): Promise<any> {
+function readWsMessage(ws: WebSocket): Promise<unknown> {
   return new Promise((resolve, reject) => {
     ws.once('message', (data) => {
       try {
@@ -108,7 +110,7 @@ function waitFor(predicate: () => boolean): Promise<void> {
   });
 }
 
-function requiredCallback<T extends (...args: any[]) => void>(callback: T | null): T {
+function requiredLogCallback(callback: ((text: string) => void) | null): (text: string) => void {
   if (!callback) {
     throw new Error('Expected callback to be registered');
   }
@@ -134,6 +136,16 @@ describe('server integration', () => {
         version: 'test',
       },
     ]);
+    mocks.listDataSources.mockReturnValue([
+      {
+        id: 'local',
+        label: 'local',
+        kind: 'docker',
+        pluginId: 'core.docker',
+        capabilities: ['graph'],
+        status: 'connected',
+      },
+    ]);
     mocks.stopWatching = vi.fn();
     mocks.watchEvents.mockReturnValue(mocks.stopWatching);
   });
@@ -151,6 +163,19 @@ describe('server integration', () => {
     expect(await graphResponse.json()).toEqual(mockGraph);
     expect(mocks.buildGraph).not.toHaveBeenCalled();
     expect(mocks.buildMultiHostGraph).toHaveBeenCalled();
+
+    const sourcesResponse = await fetch(`http://127.0.0.1:${server.port}/api/sources`);
+    expect(sourcesResponse.status).toBe(200);
+    expect(await sourcesResponse.json()).toEqual([
+      {
+        id: 'local',
+        label: 'local',
+        kind: 'docker',
+        pluginId: 'core.docker',
+        capabilities: ['graph'],
+        status: 'connected',
+      },
+    ]);
 
     const invalidIdResponse = await fetch(
       `http://127.0.0.1:${server.port}/api/containers/not-a-container/logs`,
@@ -202,7 +227,7 @@ describe('server integration', () => {
       undefined,
     );
 
-    requiredCallback(pushLog)('hello from container\n');
+    requiredLogCallback(pushLog)('hello from container\n');
     expect(await readWsMessage(ws)).toEqual({
       type: 'log_chunk',
       data: { containerId: '123456789abc', text: 'hello from container\n' },

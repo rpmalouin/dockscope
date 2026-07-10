@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type Dockerode from 'dockerode';
 
 const capture = vi.hoisted(() => {
-  return { opts: undefined as any };
+  return { opts: undefined as Dockerode.DockerOptions | undefined };
 });
 
 vi.mock('dockerode', () => {
   return {
     default: class FakeDockerode {
-      constructor(opts?: any) {
+      constructor(opts?: Dockerode.DockerOptions) {
         capture.opts = opts;
       }
       ping() {

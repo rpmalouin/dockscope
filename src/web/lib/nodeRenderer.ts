@@ -193,7 +193,7 @@ export function buildNodeObject(
     sprite.textHeight = 3.5;
     sprite.fontFace = "'Fira Code', monospace";
     sprite.fontWeight = '700';
-    sprite.backgroundColor = 'rgba(255, 204, 0, 0.15)' as any;
+    sprite.backgroundColor = 'rgba(255, 204, 0, 0.15)';
     sprite.padding = 1.5;
     sprite.borderRadius = 2;
     sprite.position.set(radius + 3, radius + 3, 0);
@@ -209,7 +209,7 @@ export function buildNodeObject(
   label.textHeight = NC.labelHeight;
   label.fontFace = "'Fira Code', monospace";
   label.fontWeight = '400';
-  label.backgroundColor = 'rgba(4, 4, 14, 0.65)' as any;
+  label.backgroundColor = 'rgba(4, 4, 14, 0.65)';
   label.padding = 1;
   label.borderRadius = 1.5;
   const labelOffset = ringOuterEdge + NC.labelOffset;

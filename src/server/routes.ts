@@ -18,13 +18,15 @@ import {
   removeContainer,
 } from '../docker/client.js';
 import { compareEnvironments } from './compare.js';
-import { addHost, removeHost, listHosts, getHost } from '../docker/hosts.js';
+import { addHost, removeHost, listHosts, getHost, listDataSources } from '../docker/hosts.js';
 import type { GraphData, ServerOptions } from '../types.js';
-import { shortId } from '../utils.js';
+import { errorMessage, shortId } from '../utils.js';
 import { PKG_VERSION, fetchLatestVersion } from '../version.js';
 
 const VALID_ID = /^[a-f0-9]{12,64}$/i;
 const VALID_NODE_ID = /^([^\s:]+:)?[a-f0-9]{12,64}$/i;
+const COMPOSE_ACTIONS = ['up', 'down', 'destroy', 'stop', 'start', 'restart'] as const;
+type ComposeAction = (typeof COMPOSE_ACTIONS)[number];
 
 class RouteError extends Error {
   constructor(
@@ -41,9 +43,9 @@ function asyncRoute(handler: (req: Request, res: Response) => Promise<void>) {
   return async (req: Request, res: Response) => {
     try {
       await handler(req, res);
-    } catch (err: any) {
+    } catch (err) {
       const status = err instanceof RouteError ? err.status : 500;
-      res.status(status).json({ error: err.message });
+      res.status(status).json({ error: errorMessage(err) });
     }
   };
 }
@@ -77,6 +79,10 @@ function getMetricNodeId(req: Request): string {
     return nodeId;
   }
   return shortId(getId(req));
+}
+
+function isComposeAction(value: string): value is ComposeAction {
+  return COMPOSE_ACTIONS.includes(value as ComposeAction);
 }
 
 export function setupRoutes(
@@ -236,6 +242,10 @@ export function setupRoutes(
     res.json(listHosts());
   });
 
+  app.get('/api/sources', (_req, res) => {
+    res.json(listDataSources());
+  });
+
   app.post(
     '/api/hosts',
     asyncRoute(async (req, res) => {
@@ -288,11 +298,11 @@ export function setupRoutes(
       }
       const name = req.params.name as string;
       const action = req.params.action as string;
-      if (!['up', 'down', 'destroy', 'stop', 'start', 'restart'].includes(action)) {
+      if (!isComposeAction(action)) {
         res.status(400).json({ error: `Invalid action: ${action}` });
         return;
       }
-      res.json({ ok: true, message: await composeAction(name, action as any) });
+      res.json({ ok: true, message: await composeAction(name, action) });
     }),
   );
 

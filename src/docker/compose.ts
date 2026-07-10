@@ -1,6 +1,43 @@
 import { readFile } from 'fs/promises';
 import { parse } from 'yaml';
 
+type ComposeObject = Record<string, unknown>;
+
+interface ComposeDocument {
+  services?: Record<string, ComposeServiceSpec>;
+  networks?: ComposeObject;
+}
+
+interface ComposeServiceSpec {
+  image?: unknown;
+  ports?: unknown;
+  networks?: unknown;
+  depends_on?: unknown;
+  volumes?: unknown;
+  environment?: unknown;
+  labels?: unknown;
+  healthcheck?: unknown;
+  deploy?: unknown;
+}
+
+interface ComposeHealthcheckSpec {
+  test?: unknown;
+  interval?: unknown;
+  timeout?: unknown;
+  retries?: unknown;
+}
+
+interface ComposeResourceLimitsSpec {
+  cpus?: unknown;
+  memory?: unknown;
+}
+
+interface ComposeDeploySpec {
+  resources?: {
+    limits?: ComposeResourceLimitsSpec;
+  };
+}
+
 export interface ComposeService {
   name: string;
   image: string;
@@ -21,7 +58,7 @@ export interface ComposeData {
 
 export async function parseComposeFile(filePath: string): Promise<ComposeData> {
   const content = await readFile(filePath, 'utf-8');
-  const compose = parse(content);
+  const compose = parseComposeDocument(parse(content));
 
   if (!compose?.services) {
     return { services: [], networks: [] };
@@ -29,12 +66,12 @@ export async function parseComposeFile(filePath: string): Promise<ComposeData> {
 
   const services: ComposeService[] = [];
 
-  for (const [name, svc] of Object.entries<any>(compose.services)) {
+  for (const [name, svc] of Object.entries(compose.services)) {
     const dependsOn = parseDependsOn(svc.depends_on);
 
     services.push({
       name,
-      image: svc.image || `${name}:latest`,
+      image: typeof svc.image === 'string' && svc.image ? svc.image : `${name}:latest`,
       ports: Array.isArray(svc.ports) ? svc.ports.map(String) : [],
       networks: parseNetworks(svc.networks),
       dependsOn,
@@ -49,6 +86,27 @@ export async function parseComposeFile(filePath: string): Promise<ComposeData> {
   const topLevelNetworks = compose.networks ? Object.keys(compose.networks) : [];
 
   return { services, networks: topLevelNetworks };
+}
+
+function isObject(value: unknown): value is ComposeObject {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseComposeDocument(value: unknown): ComposeDocument | null {
+  if (!isObject(value)) {
+    return null;
+  }
+  const services = isObject(value.services)
+    ? Object.fromEntries(
+        Object.entries(value.services)
+          .filter((entry): entry is [string, ComposeServiceSpec] => isObject(entry[1]))
+          .map(([name, service]) => [name, service]),
+      )
+    : undefined;
+  return {
+    services,
+    networks: isObject(value.networks) ? value.networks : undefined,
+  };
 }
 
 function parseDependsOn(dep: unknown): string[] {
@@ -128,27 +186,27 @@ function parseLabels(labels: unknown): Record<string, string> {
 }
 
 function parseHealthcheck(hc: unknown): ComposeService['healthcheck'] {
-  if (!hc || typeof hc !== 'object') {
+  if (!isObject(hc)) {
     return null;
   }
-  const h = hc as any;
+  const h: ComposeHealthcheckSpec = hc;
   const test = Array.isArray(h.test) ? h.test.join(' ') : String(h.test || '');
   if (!test) {
     return null;
   }
   return {
     test,
-    interval: h.interval,
-    timeout: h.timeout,
-    retries: h.retries,
+    interval: typeof h.interval === 'string' ? h.interval : undefined,
+    timeout: typeof h.timeout === 'string' ? h.timeout : undefined,
+    retries: typeof h.retries === 'number' ? h.retries : undefined,
   };
 }
 
 function parseResourceLimits(deploy: unknown): ComposeService['resourceLimits'] {
-  if (!deploy || typeof deploy !== 'object') {
+  if (!isObject(deploy)) {
     return null;
   }
-  const d = deploy as any;
+  const d: ComposeDeploySpec = deploy;
   const limits = d.resources?.limits;
   if (!limits) {
     return null;

@@ -27,7 +27,6 @@ export default [
       ...svelte.configs.recommended.rules,
       curly: ['error', 'all'],
       'no-undef': 'off',
-      '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-unused-expressions': 'off',
       '@typescript-eslint/no-unused-vars': [
         'warn',
@@ -41,7 +40,6 @@ export default [
     files: ['**/*.ts'],
     rules: {
       curly: ['error', 'all'],
-      '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
       'no-control-regex': 'off',
     },

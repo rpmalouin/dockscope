@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type Dockerode from 'dockerode';
 import { getContainerStats } from '../metrics';
 
 const MiB = 1024 * 1024;
 
-function makeStats(overrides: Record<string, any> = {}) {
+function makeStats(overrides: Record<string, unknown> = {}) {
   return {
     cpu_stats: {
       cpu_usage: { total_usage: 5000 },
@@ -32,6 +33,10 @@ function makeDocker(stats: unknown) {
   return { docker: { getContainer }, getContainer, statsMock };
 }
 
+function asDocker(docker: ReturnType<typeof makeDocker>['docker']): Dockerode {
+  return docker as unknown as Dockerode;
+}
+
 describe('getContainerStats', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -40,7 +45,7 @@ describe('getContainerStats', () => {
   it('calculates Docker CPU percentage with the online CPU multiplier', async () => {
     const { docker } = makeDocker(makeStats());
 
-    const stats = await getContainerStats(docker as any, 'abcdef1234567890');
+    const stats = await getContainerStats(asDocker(docker), 'abcdef1234567890');
 
     expect(stats.cpu).toBe(160);
   });
@@ -59,7 +64,7 @@ describe('getContainerStats', () => {
       }),
     );
 
-    const stats = await getContainerStats(docker as any, 'bcdef1234567890a');
+    const stats = await getContainerStats(asDocker(docker), 'bcdef1234567890a');
 
     expect(stats.cpu).toBe(200);
   });
@@ -78,7 +83,7 @@ describe('getContainerStats', () => {
       }),
     );
 
-    const stats = await getContainerStats(docker as any, 'cdef1234567890ab');
+    const stats = await getContainerStats(asDocker(docker), 'cdef1234567890ab');
 
     expect(stats.memory).toBe(150 * MiB);
     expect(stats.memoryLimit).toBe(512 * MiB);
@@ -99,7 +104,7 @@ describe('getContainerStats', () => {
       }),
     );
 
-    const stats = await getContainerStats(docker as any, 'def1234567890abc');
+    const stats = await getContainerStats(asDocker(docker), 'def1234567890abc');
 
     expect(stats.memory).toBe(130 * MiB);
   });
@@ -115,7 +120,7 @@ describe('getContainerStats', () => {
       }),
     );
 
-    const stats = await getContainerStats(docker as any, 'ef1234567890abcd');
+    const stats = await getContainerStats(asDocker(docker), 'ef1234567890abcd');
 
     expect(stats.memory).toBe(150 * MiB);
     expect(stats.memoryLimit).toBe(0);
@@ -131,9 +136,9 @@ describe('getContainerStats', () => {
     const id = 'f1234567890abcde';
 
     vi.setSystemTime(1000);
-    const first = await getContainerStats(docker as any, id);
+    const first = await getContainerStats(docker as unknown as Dockerode, id);
     vi.setSystemTime(4000);
-    const second = await getContainerStats(docker as any, id);
+    const second = await getContainerStats(docker as unknown as Dockerode, id);
 
     expect(first.networkRxRate).toBe(0);
     expect(first.networkTxRate).toBe(0);
@@ -151,9 +156,13 @@ describe('getContainerStats', () => {
     const id = 'a1234567890abcde';
 
     vi.setSystemTime(1000);
-    await getContainerStats(docker as any, id, 'host-a:a1234567890a');
+    await getContainerStats(docker as unknown as Dockerode, id, 'host-a:a1234567890a');
     vi.setSystemTime(4000);
-    const stats = await getContainerStats(docker as any, id, 'host-b:a1234567890a');
+    const stats = await getContainerStats(
+      docker as unknown as Dockerode,
+      id,
+      'host-b:a1234567890a',
+    );
 
     expect(stats.networkRxRate).toBe(0);
     expect(stats.networkTxRate).toBe(0);

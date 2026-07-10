@@ -1,10 +1,13 @@
 import Dockerode from 'dockerode';
+import { collectSourceGraphs } from '../core/sources.js';
+import type { DataSourceDescriptor, GraphSourceAdapter } from '../core/model.js';
+import { buildGraph, createDockerClient } from './client.js';
+import type { GraphData } from '../types.js';
+import { errorMessage } from '../utils.js';
 
 function rejectAfter<T>(ms: number): Promise<T> {
   return new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms));
 }
-import { createDockerClient, buildGraph } from './client.js';
-import type { GraphData, ServiceNode, ServiceLink } from '../types.js';
 
 export interface DockerHost {
   name: string;
@@ -16,6 +19,45 @@ export interface DockerHost {
 }
 
 const hosts = new Map<string, DockerHost>();
+const DOCKER_HOST_CAPABILITIES = [
+  'graph',
+  'events',
+  'stats',
+  'logs',
+  'inspect',
+  'actions',
+  'exec',
+  'diff',
+  'top',
+  'diagnostics',
+] as const;
+
+export function describeDockerHostSource(host: DockerHost): DataSourceDescriptor {
+  return {
+    id: host.name,
+    label: host.name,
+    kind: 'docker',
+    pluginId: 'core.docker',
+    capabilities: DOCKER_HOST_CAPABILITIES,
+    status: host.connected ? 'connected' : 'disconnected',
+    metadata: {
+      url: host.url,
+      containers: host.containers,
+      version: host.version,
+    },
+  };
+}
+
+function createDockerHostGraphAdapter(host: DockerHost): GraphSourceAdapter {
+  return {
+    describe: () => describeDockerHostSource(host),
+    collectGraph: async () => ({
+      source: describeDockerHostSource(host),
+      graph: await buildGraph(undefined, host.name, host.client),
+      collectedAt: Date.now(),
+    }),
+  };
+}
 
 /** Initialize with the default local host */
 export function initHosts(defaultHost?: string): void {
@@ -45,8 +87,8 @@ export async function addHost(name: string, url: string): Promise<{ ok: boolean;
     ]);
     hosts.set(name, { name, url, client, connected: true, containers: 0, version: '' });
     return { ok: true };
-  } catch (err: any) {
-    return { ok: false, error: `Cannot connect to ${url}: ${err.message}` };
+  } catch (err) {
+    return { ok: false, error: `Cannot connect to ${url}: ${errorMessage(err)}` };
   }
 }
 
@@ -85,6 +127,10 @@ export function listHosts(): {
   }));
 }
 
+export function listDataSources(): DataSourceDescriptor[] {
+  return [...hosts.values()].map(describeDockerHostSource);
+}
+
 /** Refresh host status in the background (called periodically by the server) */
 export async function refreshHostStatus(): Promise<void> {
   await Promise.all(
@@ -111,47 +157,20 @@ export async function refreshHostStatus(): Promise<void> {
 
 /** Build a merged graph from all connected hosts */
 export async function buildMultiHostGraph(): Promise<GraphData> {
-  const allNodes: ServiceNode[] = [];
-  const allLinks: ServiceLink[] = [];
-
-  const results = await Promise.allSettled(
-    [...hosts.values()].map(async (h) => {
-      try {
-        const graph = await Promise.race([
-          buildGraph(undefined, h.name, h.client),
-          rejectAfter<GraphData>(5000),
-        ]);
-        h.connected = true;
-        return graph;
-      } catch {
-        h.connected = false;
-        return null;
-      }
-    }),
+  const collection = await collectSourceGraphs(
+    [...hosts.values()].map(createDockerHostGraphAdapter),
+    { timeoutMs: 5000, scopeIds: hosts.size > 1 },
   );
+  const failedHosts = new Set(collection.errors.map((error) => error.source.id));
+  const healthyHosts = new Set(collection.snapshots.map((snapshot) => snapshot.source.id));
 
-  for (const result of results) {
-    if (result.status === 'fulfilled' && result.value) {
-      // Prefix node IDs with host name to avoid collisions when the same
-      // daemon is reachable via multiple URLs (prevents superposed nodes)
-      const hostName = result.value.nodes[0]?.host || 'local';
-      if (hosts.size > 1) {
-        for (const node of result.value.nodes) {
-          node.id = `${hostName}:${node.id}`;
-        }
-        for (const link of result.value.links) {
-          if (typeof link.source === 'string') {
-            link.source = `${hostName}:${link.source}`;
-          }
-          if (typeof link.target === 'string') {
-            link.target = `${hostName}:${link.target}`;
-          }
-        }
-      }
-      allNodes.push(...result.value.nodes);
-      allLinks.push(...result.value.links);
+  for (const host of hosts.values()) {
+    if (failedHosts.has(host.name)) {
+      host.connected = false;
+    } else if (healthyHosts.has(host.name)) {
+      host.connected = true;
     }
   }
 
-  return { nodes: allNodes, links: allLinks };
+  return collection.graph;
 }

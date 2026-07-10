@@ -114,7 +114,7 @@ function createClusterLabel(name: string, color: string): SpriteText {
   label.textHeight = 3;
   label.fontFace = "'Fira Code', monospace";
   label.fontWeight = '600';
-  label.backgroundColor = false as any;
+  label.backgroundColor = false;
   label.padding = 0;
   (label.material as SpriteMaterial).depthWrite = false;
   (label.material as SpriteMaterial).opacity = 0.5;

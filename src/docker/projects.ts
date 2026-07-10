@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import type Dockerode from 'dockerode';
 import { getDefaultDockerClient } from './connection.js';
 
 const execFileAsync = promisify(execFile);
@@ -12,7 +13,7 @@ interface ProjectMeta {
 const projectCache = new Map<string, ProjectMeta>();
 
 /** Cache project metadata from container labels */
-function cacheProjectMeta(containers: any[]): void {
+function cacheProjectMeta(containers: Dockerode.ContainerInfo[]): void {
   for (const c of containers) {
     const project = c.Labels['com.docker.compose.project'];
     const workDir = c.Labels['com.docker.compose.project.working_dir'];
@@ -71,7 +72,7 @@ async function getProjectContainers(project: string) {
 /** Build the docker compose command from container labels or cache */
 function getComposeCommand(
   project: string,
-  containers: any[],
+  containers: Dockerode.ContainerInfo[],
 ): { args: string[]; cwd: string } | null {
   let workDir = containers[0]?.Labels['com.docker.compose.project.working_dir'];
   let configFiles = containers[0]?.Labels['com.docker.compose.project.config_files'];

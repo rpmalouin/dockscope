@@ -2,6 +2,11 @@ import Dockerode from 'dockerode';
 
 const DEMUX_HEADER_SIZE = 8;
 
+function destroyStream(target: NodeJS.ReadableStream | null | undefined): void {
+  const destroy = (target as (NodeJS.ReadableStream & { destroy?: () => void }) | null)?.destroy;
+  destroy?.call(target);
+}
+
 /** Demux Docker log buffer (handles both multiplexed and TTY formats) */
 export function demuxLogBuffer(buffer: Buffer): string {
   if (buffer.length >= DEMUX_HEADER_SIZE && buffer[0] !== undefined && buffer[0] <= 2) {
@@ -34,8 +39,7 @@ export async function getContainerLogs(
     follow: false,
     timestamps: true,
   });
-  const buf = Buffer.isBuffer(logBuffer) ? logBuffer : Buffer.from(logBuffer as any);
-  return demuxLogBuffer(buf);
+  return demuxLogBuffer(logBuffer);
 }
 
 export function streamContainerLogs(
@@ -50,13 +54,13 @@ export function streamContainerLogs(
   const container = docker.getContainer(containerId);
   container.logs(
     { stdout: true, stderr: true, tail: 100, follow: true, timestamps: true },
-    (err: any, stream: any) => {
+    (err: Error | null, stream?: NodeJS.ReadableStream) => {
       if (err || !stream) {
         onError?.(err || new Error('Failed to get log stream'));
         return;
       }
       if (destroyed) {
-        stream.destroy?.();
+        destroyStream(stream);
         return;
       }
       logStream = stream;
@@ -72,6 +76,6 @@ export function streamContainerLogs(
 
   return () => {
     destroyed = true;
-    (logStream as any)?.destroy?.();
+    destroyStream(logStream);
   };
 }
