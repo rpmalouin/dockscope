@@ -19,7 +19,7 @@ import {
 } from '../docker/client.js';
 import { compareEnvironments } from './compare.js';
 import { addHost, removeHost, listHosts, getHost } from '../docker/hosts.js';
-import type { ServerOptions } from '../types.js';
+import type { GraphData, ServerOptions } from '../types.js';
 import { shortId } from '../utils.js';
 import { PKG_VERSION, fetchLatestVersion } from '../version.js';
 
@@ -83,6 +83,7 @@ export function setupRoutes(
   app: Express,
   opts: ServerOptions,
   metricHistory: Map<string, { cpu: number; memory: number; time: number }[]>,
+  getGraph: () => GraphData,
 ): void {
   // Validate container ID format
   app.param('id', (req, res, next) => {
@@ -96,7 +97,7 @@ export function setupRoutes(
   app.get(
     '/api/graph',
     asyncRoute(async (_req, res) => {
-      res.json(await buildGraph());
+      res.json(getGraph());
     }),
   );
 

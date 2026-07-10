@@ -137,7 +137,8 @@ describe('server integration', () => {
     const graphResponse = await fetch(`http://127.0.0.1:${server.port}/api/graph`);
     expect(graphResponse.status).toBe(200);
     expect(await graphResponse.json()).toEqual(mockGraph);
-    expect(mocks.buildGraph).toHaveBeenCalledOnce();
+    expect(mocks.buildGraph).not.toHaveBeenCalled();
+    expect(mocks.buildMultiHostGraph).toHaveBeenCalled();
 
     const invalidIdResponse = await fetch(
       `http://127.0.0.1:${server.port}/api/containers/not-a-container/logs`,

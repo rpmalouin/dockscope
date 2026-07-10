@@ -37,8 +37,17 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   // Metric history storage (shared with routes)
   const metricHistory = new Map<string, { cpu: number; memory: number; time: number }[]>();
 
-  // REST routes
-  setupRoutes(app, opts, metricHistory);
+  const broadcast = (msg: WSMessage) => {
+    const data = JSON.stringify(msg);
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(data);
+      }
+    });
+  };
+
+  const monitor = createServerMonitor({ metricHistory, broadcast });
+  setupRoutes(app, opts, metricHistory, monitor.getGraph);
 
   // Frontend: Vite dev server (HMR) or static files (production)
   if (process.env.DOCKSCOPE_DEV === '1') {
@@ -63,16 +72,6 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
 
   // --- WebSocket ---
 
-  const broadcast = (msg: WSMessage) => {
-    const data = JSON.stringify(msg);
-    wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(data);
-      }
-    });
-  };
-
-  const monitor = createServerMonitor({ metricHistory, broadcast });
   await monitor.start();
   setupWebSocketHandlers(wss, { getGraph: monitor.getGraph });
 
