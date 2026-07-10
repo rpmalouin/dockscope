@@ -71,7 +71,7 @@ program
   .option('-H, --host <url>', 'Docker host URL (e.g. ssh://user@remote, tcp://host:2375)')
   .option(
     '-b, --bind <address>',
-    'Address to listen on (default: 127.0.0.1, or 0.0.0.0 inside a container)'
+    'Address to listen on (default: 127.0.0.1, or 0.0.0.0 inside a container)',
   )
   .option('--no-open', "Don't open browser automatically")
   .option('--no-port-check', 'Skip port conflict detection')
