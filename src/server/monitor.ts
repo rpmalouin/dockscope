@@ -1,6 +1,11 @@
 import { diagnoseCrash, watchEvents } from '../docker/client.js';
 import { getContainerStats } from '../docker/metrics.js';
-import { buildMultiHostGraph, getHost, refreshHostStatus } from '../docker/hosts.js';
+import {
+  buildMultiHostGraph,
+  getHost,
+  listDockerHosts,
+  refreshHostStatus,
+} from '../docker/hosts.js';
 import type { DockerEvent, GraphData, ServiceNode, WSMessage } from '../types.js';
 import { shortId } from '../utils.js';
 import { checkAnomaly } from './anomaly.js';
@@ -49,7 +54,7 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
   let statsInterval: ReturnType<typeof setInterval> | null = null;
   let graphInterval: ReturnType<typeof setInterval> | null = null;
   let hostStatusInterval: ReturnType<typeof setInterval> | null = null;
-  let stopWatching: (() => void) | null = null;
+  const eventWatchers = new Map<string, () => void>();
   let statsRefreshInFlight = false;
   const activeAnomalies = new Map<string, Set<string>>();
 
@@ -163,14 +168,65 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
     }
   };
 
-  function findDockerNode(eventContainerId: string): ServiceNode | undefined {
-    const sid = shortId(eventContainerId);
+  function findDockerNode(event: DockerEvent): ServiceNode | undefined {
+    const rawId = event.containerId || event.id;
+    const sid = shortId(rawId.includes(':') ? rawId.split(':').at(-1) || rawId : rawId);
+    const direct = cachedGraph.nodes.find((node) => node.id === event.id);
+    if (direct) {
+      return direct;
+    }
     const candidates = cachedGraph.nodes.filter(
       (node) =>
         node.runtime !== 'kubernetes' &&
-        (node.containerId === eventContainerId || shortId(node.containerId) === sid),
+        (!event.host || node.host === event.host) &&
+        (node.containerId === rawId || shortId(node.containerId) === sid),
     );
     return candidates.find((node) => node.host === 'local') || candidates[0];
+  }
+
+  function syncEventWatchers() {
+    const hosts = listDockerHosts();
+    const activeHostNames = new Set(hosts.map((host) => host.name));
+
+    for (const [hostName, stop] of eventWatchers) {
+      const host = hosts.find((h) => h.name === hostName);
+      if (!host || !host.connected) {
+        stop();
+        eventWatchers.delete(hostName);
+      }
+    }
+
+    for (const host of hosts) {
+      if (!host.connected || eventWatchers.has(host.name)) {
+        continue;
+      }
+
+      let stopWatching: (() => void) | null = null;
+      const forgetWatcher = () => {
+        if (stopWatching && eventWatchers.get(host.name) === stopWatching) {
+          eventWatchers.delete(host.name);
+        }
+      };
+
+      stopWatching = watchEvents(
+        handleDockerEvent,
+        (err) => {
+          console.error(`Docker event stream error (${host.name}):`, err.message);
+          forgetWatcher();
+        },
+        host.client,
+        host.name,
+        forgetWatcher,
+      );
+      eventWatchers.set(host.name, stopWatching);
+    }
+
+    for (const hostName of eventWatchers.keys()) {
+      if (!activeHostNames.has(hostName)) {
+        eventWatchers.get(hostName)?.();
+        eventWatchers.delete(hostName);
+      }
+    }
   }
 
   function debouncedRefreshGraph() {
@@ -184,13 +240,18 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
   }
 
   const handleDockerEvent = (event: DockerEvent) => {
-    opts.broadcast({ type: 'event', data: event });
+    const node = findDockerNode(event);
+    const graphEvent = {
+      ...event,
+      id: node?.id || event.id,
+    };
+    opts.broadcast({ type: 'event', data: graphEvent });
     if (GRAPH_REFRESH_ACTIONS.includes(event.action)) {
       debouncedRefreshGraph();
     }
     if (event.action === 'die') {
-      const node = findDockerNode(event.id);
-      diagnoseCrash(event.id).then((diag) => {
+      const host = getHost(event.host || node?.host || 'local');
+      diagnoseCrash(event.containerId || event.id, host?.client).then((diag) => {
         if (diag) {
           opts.broadcast({
             type: 'diagnostic',
@@ -204,14 +265,22 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
   return {
     getGraph: () => cachedGraph,
     async start() {
-      stopWatching = watchEvents(handleDockerEvent, (err) =>
-        console.error('Docker event stream error:', err.message),
-      );
       await refreshGraph();
+      syncEventWatchers();
       statsInterval = setInterval(refreshStats, 3000);
-      graphInterval = setInterval(refreshGraph, 10000);
-      hostStatusInterval = setInterval(() => refreshHostStatus().catch(() => {}), 10000);
-      refreshHostStatus().catch(() => {});
+      graphInterval = setInterval(() => {
+        refreshGraph()
+          .then(syncEventWatchers)
+          .catch(() => {});
+      }, 10000);
+      hostStatusInterval = setInterval(() => {
+        refreshHostStatus()
+          .then(syncEventWatchers)
+          .catch(() => {});
+      }, 10000);
+      refreshHostStatus()
+        .then(syncEventWatchers)
+        .catch(() => {});
     },
     stop() {
       if (refreshTimer) {
@@ -227,7 +296,10 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
       if (hostStatusInterval) {
         clearInterval(hostStatusInterval);
       }
-      stopWatching?.();
+      for (const stop of eventWatchers.values()) {
+        stop();
+      }
+      eventWatchers.clear();
     },
   };
 }

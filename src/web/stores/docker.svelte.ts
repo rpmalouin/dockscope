@@ -198,7 +198,7 @@ function handleMessage(msg: WSMessage, opts: { replay?: boolean } = {}) {
     case 'event': {
       const event = msg.data as DockerEvent;
       events = [event, ...events].slice(0, 200);
-      if (shouldRefreshLogSubscription(streamingLogContainerId, event)) {
+      if (shouldRefreshLogSubscription(streamingLogContainerId, streamingLogHost, event)) {
         refreshLogSubscription();
       }
       break;

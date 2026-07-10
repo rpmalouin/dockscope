@@ -52,12 +52,18 @@
     hideHealthChecks ? events.filter((e) => !isHealthCheckEvent(e.action)) : events,
   );
 
-  function selectByActor(actor: string) {
+  function selectByEvent(event: DockerEvent) {
     if (!onSelectContainer) {
       return;
     }
+    const shortId = event.id.includes(':') ? event.id.split(':').at(-1) : event.id;
     const node = graph.nodes.find(
-      (n) => n.fullName === actor || n.name === actor || n.id === actor,
+      (n) =>
+        n.id === event.id ||
+        n.containerId === event.containerId ||
+        (shortId && n.containerId.startsWith(shortId)) ||
+        ((!event.host || n.host === event.host) &&
+          (n.fullName === event.actor || n.name === event.actor)),
     );
     if (node) {
       onSelectContainer(node);
@@ -159,9 +165,7 @@
       <div class="event-row">
         <span class="event-time">{formatTime(event.time)}</span>
         <span class="event-action {event.action}">{event.action}</span>
-        <button class="event-actor-btn" onclick={() => selectByActor(event.actor)}
-          >{event.actor}</button
-        >
+        <button class="event-actor-btn" onclick={() => selectByEvent(event)}>{event.actor}</button>
         <span class="event-type">{event.type}</span>
       </div>
     {/each}

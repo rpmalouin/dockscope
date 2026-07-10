@@ -1,17 +1,30 @@
 import { shortId } from '../utils.js';
 import type { DockerEvent } from '../types.js';
 import { getDefaultDockerClient } from './connection.js';
+import type Dockerode from 'dockerode';
 
 export function watchEvents(
   callback: (event: DockerEvent) => void,
   onError?: (err: Error) => void,
+  client: Dockerode = getDefaultDockerClient(),
+  host = 'local',
+  onClose?: () => void,
 ): () => void {
   let destroyed = false;
   let stream: NodeJS.ReadableStream | null = null;
+  let closed = false;
 
-  getDefaultDockerClient().getEvents({}, (err, eventStream) => {
+  const notifyClosed = () => {
+    if (!destroyed && !closed) {
+      closed = true;
+      onClose?.();
+    }
+  };
+
+  client.getEvents({}, (err, eventStream) => {
     if (err || !eventStream) {
       onError?.(err || new Error('Failed to get event stream'));
+      notifyClosed();
       return;
     }
     if (destroyed) {
@@ -22,23 +35,32 @@ export function watchEvents(
     eventStream.on('data', (chunk: Buffer) => {
       try {
         const raw = JSON.parse(chunk.toString());
+        const containerId = raw.Actor?.ID || raw.id || '';
+        const actor =
+          raw.Actor?.Attributes?.name ||
+          raw.Actor?.Attributes?.['com.docker.compose.service'] ||
+          shortId(containerId) ||
+          'unknown';
         callback({
-          id: shortId(raw.Actor?.ID || raw.id || ''),
+          id: shortId(containerId),
+          containerId,
+          host,
           type: raw.Type || 'unknown',
           action: raw.Action || raw.status || 'unknown',
-          actor:
-            raw.Actor?.Attributes?.name ||
-            raw.Actor?.Attributes?.['com.docker.compose.service'] ||
-            shortId(raw.Actor?.ID || '') ||
-            'unknown',
+          actor,
           time: raw.time || Math.floor(Date.now() / 1000),
-          message: `${raw.Type || ''} ${raw.Action || ''}: ${raw.Actor?.Attributes?.name || shortId(raw.Actor?.ID || '') || ''}`,
+          message: `${host} ${raw.Type || ''} ${raw.Action || ''}: ${actor}`,
         });
       } catch {
         /* ignore */
       }
     });
-    eventStream.on('error', (e: Error) => onError?.(e));
+    eventStream.on('error', (e: Error) => {
+      onError?.(e);
+      notifyClosed();
+    });
+    eventStream.on('end', notifyClosed);
+    eventStream.on('close', notifyClosed);
   });
 
   return () => {

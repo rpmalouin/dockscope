@@ -37,6 +37,7 @@ const mocks = vi.hoisted(() => ({
   watchEvents: vi.fn(),
   buildMultiHostGraph: vi.fn(),
   refreshHostStatus: vi.fn(),
+  listDockerHosts: vi.fn(),
   initHosts: vi.fn(),
   stopWatching: vi.fn(),
 }));
@@ -68,6 +69,7 @@ vi.mock('../../docker/hosts.js', () => ({
   buildMultiHostGraph: mocks.buildMultiHostGraph,
   getHost: vi.fn(),
   initHosts: mocks.initHosts,
+  listDockerHosts: mocks.listDockerHosts,
   listHosts: vi.fn(() => []),
   refreshHostStatus: mocks.refreshHostStatus,
   removeHost: vi.fn(),
@@ -122,6 +124,16 @@ describe('server integration', () => {
     mocks.buildGraph.mockResolvedValue(mockGraph);
     mocks.buildMultiHostGraph.mockResolvedValue(mockGraph);
     mocks.refreshHostStatus.mockResolvedValue(undefined);
+    mocks.listDockerHosts.mockReturnValue([
+      {
+        name: 'local',
+        url: 'local',
+        client: {},
+        connected: true,
+        containers: 1,
+        version: 'test',
+      },
+    ]);
     mocks.stopWatching = vi.fn();
     mocks.watchEvents.mockReturnValue(mocks.stopWatching);
   });

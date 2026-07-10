@@ -48,6 +48,8 @@ export interface GraphData {
 
 export interface DockerEvent {
   id: string;
+  containerId?: string;
+  host?: string;
   type: string;
   action: string;
   actor: string;

@@ -16,18 +16,41 @@ function event(overrides: Partial<DockerEvent>): DockerEvent {
 
 describe('log subscriptions', () => {
   it('refreshes when the streamed Docker container starts again', () => {
-    expect(shouldRefreshLogSubscription('abcdef1234567890', event({ action: 'start' }))).toBe(true);
-    expect(shouldRefreshLogSubscription('abcdef1234567890', event({ action: 'restart' }))).toBe(
-      true,
-    );
-    expect(shouldRefreshLogSubscription('abcdef1234567890', event({ action: 'unpause' }))).toBe(
-      true,
-    );
+    expect(
+      shouldRefreshLogSubscription('abcdef1234567890', 'local', event({ action: 'start' })),
+    ).toBe(true);
+    expect(
+      shouldRefreshLogSubscription('abcdef1234567890', 'local', event({ action: 'restart' })),
+    ).toBe(true);
+    expect(
+      shouldRefreshLogSubscription('abcdef1234567890', 'local', event({ action: 'unpause' })),
+    ).toBe(true);
   });
 
   it('does not refresh for unrelated containers or stop events', () => {
-    expect(shouldRefreshLogSubscription('123456abcdef', event({ action: 'start' }))).toBe(false);
-    expect(shouldRefreshLogSubscription('abcdef1234567890', event({ action: 'die' }))).toBe(false);
-    expect(shouldRefreshLogSubscription(null, event({ action: 'start' }))).toBe(false);
+    expect(shouldRefreshLogSubscription('123456abcdef', 'local', event({ action: 'start' }))).toBe(
+      false,
+    );
+    expect(
+      shouldRefreshLogSubscription('abcdef1234567890', 'local', event({ action: 'die' })),
+    ).toBe(false);
+    expect(shouldRefreshLogSubscription(null, 'local', event({ action: 'start' }))).toBe(false);
+  });
+
+  it('matches host-aware remote container events', () => {
+    expect(
+      shouldRefreshLogSubscription(
+        'abcdef1234567890',
+        'dind-a',
+        event({ id: 'dind-a:abcdef123456', containerId: 'abcdef1234567890', host: 'dind-a' }),
+      ),
+    ).toBe(true);
+    expect(
+      shouldRefreshLogSubscription(
+        'abcdef1234567890',
+        'dind-b',
+        event({ id: 'dind-a:abcdef123456', containerId: 'abcdef1234567890', host: 'dind-a' }),
+      ),
+    ).toBe(false);
   });
 });

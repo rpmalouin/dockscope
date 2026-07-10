@@ -55,6 +55,11 @@ export function getHost(name: string): DockerHost | undefined {
   return hosts.get(name);
 }
 
+/** Return host entries for internal server services such as event monitoring. */
+export function listDockerHosts(): DockerHost[] {
+  return [...hosts.values()];
+}
+
 /** Remove a Docker host */
 export function removeHost(name: string): boolean {
   if (name === 'local') {
