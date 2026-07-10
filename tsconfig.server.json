@@ -18,6 +18,8 @@
     "src/core/**/*",
     "src/server/**/*",
     "src/docker/**/*",
+    "src/plugins/**/*",
+    "src/plugin-sdk.ts",
     "src/types.ts",
     "src/utils.ts"
   ],

@@ -2,6 +2,8 @@ import Dockerode from 'dockerode';
 import { collectSourceGraphs } from '../core/sources.js';
 import type { DataSourceDescriptor, GraphSourceAdapter } from '../core/model.js';
 import { buildGraph, createDockerClient } from './client.js';
+import { DOCKER_SOURCE_CAPABILITIES } from './capabilities.js';
+import { watchEvents } from './events.js';
 import type { GraphData } from '../types.js';
 import { errorMessage } from '../utils.js';
 
@@ -19,18 +21,6 @@ export interface DockerHost {
 }
 
 const hosts = new Map<string, DockerHost>();
-const DOCKER_HOST_CAPABILITIES = [
-  'graph',
-  'events',
-  'stats',
-  'logs',
-  'inspect',
-  'actions',
-  'exec',
-  'diff',
-  'top',
-  'diagnostics',
-] as const;
 
 export function describeDockerHostSource(host: DockerHost): DataSourceDescriptor {
   return {
@@ -38,7 +28,7 @@ export function describeDockerHostSource(host: DockerHost): DataSourceDescriptor
     label: host.name,
     kind: 'docker',
     pluginId: 'core.docker',
-    capabilities: DOCKER_HOST_CAPABILITIES,
+    capabilities: DOCKER_SOURCE_CAPABILITIES,
     status: host.connected ? 'connected' : 'disconnected',
     metadata: {
       url: host.url,
@@ -51,11 +41,39 @@ export function describeDockerHostSource(host: DockerHost): DataSourceDescriptor
 function createDockerHostGraphAdapter(host: DockerHost): GraphSourceAdapter {
   return {
     describe: () => describeDockerHostSource(host),
-    collectGraph: async () => ({
-      source: describeDockerHostSource(host),
-      graph: await buildGraph(undefined, host.name, host.client),
-      collectedAt: Date.now(),
-    }),
+    collectGraph: async () => {
+      try {
+        const graph = await buildGraph(undefined, host.name, host.client);
+        host.connected = true;
+        return {
+          source: describeDockerHostSource(host),
+          graph,
+          collectedAt: Date.now(),
+        };
+      } catch (error) {
+        host.connected = false;
+        throw error;
+      }
+    },
+    startEvents: (callback, onError, onClose) =>
+      watchEvents(
+        (event) =>
+          callback({
+            source: describeDockerHostSource(host),
+            event,
+            receivedAt: Date.now(),
+          }),
+        (error) => {
+          host.connected = false;
+          onError?.(error);
+        },
+        host.client,
+        host.name,
+        () => {
+          host.connected = false;
+          onClose?.();
+        },
+      ),
   };
 }
 
@@ -127,8 +145,8 @@ export function listHosts(): {
   }));
 }
 
-export function listDataSources(): DataSourceDescriptor[] {
-  return [...hosts.values()].map(describeDockerHostSource);
+export function listDockerGraphSources(): GraphSourceAdapter[] {
+  return [...hosts.values()].map(createDockerHostGraphAdapter);
 }
 
 /** Refresh host status in the background (called periodically by the server) */
@@ -157,20 +175,9 @@ export async function refreshHostStatus(): Promise<void> {
 
 /** Build a merged graph from all connected hosts */
 export async function buildMultiHostGraph(): Promise<GraphData> {
-  const collection = await collectSourceGraphs(
-    [...hosts.values()].map(createDockerHostGraphAdapter),
-    { timeoutMs: 5000, scopeIds: hosts.size > 1 },
-  );
-  const failedHosts = new Set(collection.errors.map((error) => error.source.id));
-  const healthyHosts = new Set(collection.snapshots.map((snapshot) => snapshot.source.id));
-
-  for (const host of hosts.values()) {
-    if (failedHosts.has(host.name)) {
-      host.connected = false;
-    } else if (healthyHosts.has(host.name)) {
-      host.connected = true;
-    }
-  }
-
+  const collection = await collectSourceGraphs(listDockerGraphSources(), {
+    timeoutMs: 5000,
+    scopeIds: hosts.size > 1,
+  });
   return collection.graph;
 }

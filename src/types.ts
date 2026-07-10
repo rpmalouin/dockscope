@@ -158,6 +158,14 @@ export interface ServerOptions {
   open: boolean;
   host?: string;
   bind?: string;
+  pluginPaths?: string;
+  pluginPermissions?: string;
+  pluginConfig?: string;
+  pluginState?: string;
+  pluginSecrets?: string;
+  pluginSecretKey?: string;
+  pluginEvents?: string;
+  disableExternalPlugins?: boolean;
 }
 
 export interface ServerHandle {

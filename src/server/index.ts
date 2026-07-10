@@ -10,14 +10,46 @@ import { setupRoutes } from './routes.js';
 import type { ServerOptions, ServerHandle, WSMessage } from '../types.js';
 import { setupWebSocketHandlers } from './websocket.js';
 import { createServerMonitor } from './monitor.js';
+import { createPluginRegistry } from '../plugins/internal.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function pluginEnvironment(opts: ServerOptions): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (opts.pluginPaths !== undefined) {
+    env.DOCKSCOPE_PLUGIN_PATHS = opts.pluginPaths;
+  }
+  if (opts.pluginPermissions !== undefined) {
+    env.DOCKSCOPE_PLUGIN_PERMISSIONS = opts.pluginPermissions;
+  }
+  if (opts.pluginConfig !== undefined) {
+    env.DOCKSCOPE_PLUGIN_CONFIG = opts.pluginConfig;
+  }
+  if (opts.pluginState !== undefined) {
+    env.DOCKSCOPE_PLUGIN_STATE = opts.pluginState;
+  }
+  if (opts.pluginSecrets !== undefined) {
+    env.DOCKSCOPE_PLUGIN_SECRETS = opts.pluginSecrets;
+  }
+  if (opts.pluginSecretKey !== undefined) {
+    env.DOCKSCOPE_PLUGIN_SECRET_KEY = opts.pluginSecretKey;
+  }
+  if (opts.pluginEvents !== undefined) {
+    env.DOCKSCOPE_PLUGIN_EVENTS = opts.pluginEvents;
+  }
+  if (opts.disableExternalPlugins) {
+    env.DOCKSCOPE_DISABLE_EXTERNAL_PLUGINS = '1';
+  }
+  return env;
+}
 
 export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   if (opts.host) {
     initDockerClient(opts.host);
   }
   initHosts(opts.host);
+  const plugins = await createPluginRegistry(pluginEnvironment(opts));
+  await plugins.startAll();
 
   const app = express();
   app.use(cors());
@@ -46,8 +78,8 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     });
   };
 
-  const monitor = createServerMonitor({ metricHistory, broadcast });
-  setupRoutes(app, opts, metricHistory, monitor.getGraph);
+  const monitor = createServerMonitor({ metricHistory, broadcast, plugins });
+  setupRoutes(app, opts, metricHistory, monitor.getGraph, plugins);
 
   // Frontend: Vite dev server (HMR) or static files (production)
   if (process.env.DOCKSCOPE_DEV === '1') {
@@ -73,10 +105,11 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   // --- WebSocket ---
 
   await monitor.start();
-  setupWebSocketHandlers(wss, { getGraph: monitor.getGraph });
+  setupWebSocketHandlers(wss, { getGraph: monitor.getGraph, plugins });
 
   const close = async (exit = false) => {
     monitor.stop();
+    await plugins.stopAll();
     process.off('SIGINT', shutdown);
     process.off('SIGTERM', shutdown);
 

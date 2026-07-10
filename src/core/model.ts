@@ -1,19 +1,7 @@
 import type { DockerEvent, GraphData, ServiceLink, ServiceNode } from '../types.js';
+import type { PluginCapability } from './capabilities.js';
 
 export type DataSourceKind = 'docker' | 'kubernetes' | 'plugin';
-
-export type DataSourceCapability =
-  | 'graph'
-  | 'events'
-  | 'stats'
-  | 'logs'
-  | 'inspect'
-  | 'actions'
-  | 'exec'
-  | 'diff'
-  | 'top'
-  | 'diagnostics';
-
 export type DataSourceStatus = 'connected' | 'disconnected' | 'unknown';
 
 export interface DataSourceDescriptor {
@@ -21,7 +9,7 @@ export interface DataSourceDescriptor {
   label: string;
   kind: DataSourceKind;
   pluginId: string;
-  capabilities: readonly DataSourceCapability[];
+  capabilities: readonly PluginCapability[];
   status: DataSourceStatus;
   metadata?: Record<string, string | number | boolean>;
 }
@@ -73,5 +61,9 @@ export interface SourceGraphCollection {
 export interface GraphSourceAdapter {
   describe(): DataSourceDescriptor;
   collectGraph(): Promise<SourceGraphSnapshot>;
-  startEvents?(callback: (event: SourceEvent) => void): () => void;
+  startEvents?(
+    callback: (event: SourceEvent) => void,
+    onError?: (error: Error) => void,
+    onClose?: () => void,
+  ): () => void;
 }

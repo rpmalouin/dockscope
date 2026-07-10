@@ -1,17 +1,14 @@
-import { diagnoseCrash, watchEvents } from '../docker/client.js';
-import { getContainerStats } from '../docker/metrics.js';
-import {
-  buildMultiHostGraph,
-  getHost,
-  listDockerHosts,
-  refreshHostStatus,
-} from '../docker/hosts.js';
+import { refreshHostStatus } from '../docker/hosts.js';
+import { collectSourceGraphs } from '../core/sources.js';
+import type { PluginRegistry } from '../core/plugins.js';
+import type { GraphSourceAdapter, SourceEvent } from '../core/model.js';
 import type { DockerEvent, GraphData, ServiceNode, WSMessage } from '../types.js';
 import { shortId } from '../utils.js';
 import { checkAnomaly } from './anomaly.js';
 
 interface MonitorOptions {
   metricHistory: Map<string, { cpu: number; memory: number; time: number }[]>;
+  plugins: PluginRegistry;
   broadcast(msg: WSMessage): void;
 }
 
@@ -60,7 +57,10 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
 
   const refreshGraph = async () => {
     try {
-      cachedGraph = await buildMultiHostGraph();
+      const collection = await collectSourceGraphs(opts.plugins.getGraphSources(), {
+        timeoutMs: 5000,
+      });
+      cachedGraph = collection.graph;
       opts.broadcast({ type: 'graph', data: cachedGraph });
       const activeIds = new Set(cachedGraph.nodes.map((n) => n.id));
       for (const id of opts.metricHistory.keys()) {
@@ -120,12 +120,12 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
       );
       await runWithConcurrency(nodes, STATS_CONCURRENCY, async (node) => {
         try {
-          const host = getHost(node.host || 'local');
-          if (!host || !host.connected) {
-            return;
-          }
           const stats = await withTimeout(
-            getContainerStats(host.client, node.containerId, node.id),
+            opts.plugins.getStats({
+              entityId: node.containerId,
+              sourceId: node.host || 'local',
+              nodeId: node.id,
+            }),
             STATS_TIMEOUT_MS,
           );
           const nodeStats = { ...stats, id: node.id };
@@ -185,46 +185,52 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
   }
 
   function syncEventWatchers() {
-    const hosts = listDockerHosts();
-    const activeHostNames = new Set(hosts.map((host) => host.name));
+    const sourceEntries = opts.plugins
+      .getGraphSources()
+      .filter(
+        (
+          source,
+        ): source is GraphSourceAdapter & Required<Pick<GraphSourceAdapter, 'startEvents'>> =>
+          Boolean(source.startEvents),
+      )
+      .map((source) => ({ source, descriptor: source.describe() }));
+    const activeSourceIds = new Set(sourceEntries.map((entry) => entry.descriptor.id));
 
-    for (const [hostName, stop] of eventWatchers) {
-      const host = hosts.find((h) => h.name === hostName);
-      if (!host || !host.connected) {
+    for (const [sourceId, stop] of eventWatchers) {
+      const entry = sourceEntries.find((item) => item.descriptor.id === sourceId);
+      if (!entry || entry.descriptor.status !== 'connected') {
         stop();
-        eventWatchers.delete(hostName);
+        eventWatchers.delete(sourceId);
       }
     }
 
-    for (const host of hosts) {
-      if (!host.connected || eventWatchers.has(host.name)) {
+    for (const { source, descriptor } of sourceEntries) {
+      if (descriptor.status !== 'connected' || eventWatchers.has(descriptor.id)) {
         continue;
       }
 
       let stopWatching: (() => void) | null = null;
       const forgetWatcher = () => {
-        if (stopWatching && eventWatchers.get(host.name) === stopWatching) {
-          eventWatchers.delete(host.name);
+        if (stopWatching && eventWatchers.get(descriptor.id) === stopWatching) {
+          eventWatchers.delete(descriptor.id);
         }
       };
 
-      stopWatching = watchEvents(
-        handleDockerEvent,
+      stopWatching = source.startEvents(
+        handleSourceEvent,
         (err) => {
-          console.error(`Docker event stream error (${host.name}):`, err.message);
+          console.error(`Source event stream error (${descriptor.id}):`, err.message);
           forgetWatcher();
         },
-        host.client,
-        host.name,
         forgetWatcher,
       );
-      eventWatchers.set(host.name, stopWatching);
+      eventWatchers.set(descriptor.id, stopWatching);
     }
 
-    for (const hostName of eventWatchers.keys()) {
-      if (!activeHostNames.has(hostName)) {
-        eventWatchers.get(hostName)?.();
-        eventWatchers.delete(hostName);
+    for (const sourceId of eventWatchers.keys()) {
+      if (!activeSourceIds.has(sourceId)) {
+        eventWatchers.get(sourceId)?.();
+        eventWatchers.delete(sourceId);
       }
     }
   }
@@ -239,7 +245,11 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
     }, 500);
   }
 
-  const handleDockerEvent = (event: DockerEvent) => {
+  const handleSourceEvent = (sourceEvent: SourceEvent) => {
+    const event: DockerEvent = {
+      ...sourceEvent.event,
+      host: sourceEvent.event.host || sourceEvent.source.id,
+    };
     const node = findDockerNode(event);
     const graphEvent = {
       ...event,
@@ -250,15 +260,21 @@ export function createServerMonitor(opts: MonitorOptions): ServerMonitor {
       debouncedRefreshGraph();
     }
     if (event.action === 'die') {
-      const host = getHost(event.host || node?.host || 'local');
-      diagnoseCrash(event.containerId || event.id, host?.client).then((diag) => {
-        if (diag) {
-          opts.broadcast({
-            type: 'diagnostic',
-            data: { ...diag, containerId: node?.id || diag.containerId },
-          });
-        }
-      });
+      opts.plugins
+        .diagnose({
+          entityId: event.containerId || event.id,
+          sourceId: event.host || node?.host || sourceEvent.source.id,
+          nodeId: node?.id,
+        })
+        .then((diag) => {
+          if (diag) {
+            opts.broadcast({
+              type: 'diagnostic',
+              data: { ...diag, containerId: node?.id || diag.containerId },
+            });
+          }
+        })
+        .catch(() => {});
     }
   };
 

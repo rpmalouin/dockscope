@@ -32,13 +32,23 @@ const mockGraph: GraphData = {
 const mocks = vi.hoisted(() => ({
   buildGraph: vi.fn(),
   checkConnection: vi.fn(),
+  composeAction: vi.fn(),
   containerAction: vi.fn(),
+  diagnoseCrash: vi.fn(),
+  getKubernetesPodLogs: vi.fn(),
+  getContainerDiff: vi.fn(),
+  getContainerLogs: vi.fn(),
+  getContainerStats: vi.fn(),
+  getContainerTop: vi.fn(),
+  inspectContainer: vi.fn(),
+  kubernetesResourceAction: vi.fn(),
+  listComposeProjects: vi.fn(),
+  removeContainer: vi.fn(),
   streamContainerLogs: vi.fn(),
   watchEvents: vi.fn(),
-  buildMultiHostGraph: vi.fn(),
   refreshHostStatus: vi.fn(),
   listDockerHosts: vi.fn(),
-  listDataSources: vi.fn(),
+  listDockerGraphSources: vi.fn(),
   initHosts: vi.fn(),
   stopWatching: vi.fn(),
 }));
@@ -46,32 +56,48 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../docker/client.js', () => ({
   buildGraph: mocks.buildGraph,
   checkConnection: mocks.checkConnection,
-  composeAction: vi.fn(),
+  composeAction: mocks.composeAction,
   containerAction: mocks.containerAction,
   createExecSession: vi.fn(),
-  diagnoseCrash: vi.fn(),
-  getContainerDiff: vi.fn(),
-  getContainerLogs: vi.fn(),
-  getContainerStats: vi.fn(),
-  getContainerTop: vi.fn(),
-  getKubernetesPodLogs: vi.fn(),
+  diagnoseCrash: mocks.diagnoseCrash,
+  getContainerDiff: mocks.getContainerDiff,
+  getContainerLogs: mocks.getContainerLogs,
+  getContainerStats: mocks.getContainerStats,
+  getContainerTop: mocks.getContainerTop,
+  getKubernetesPodLogs: mocks.getKubernetesPodLogs,
   getSystemInfo: vi.fn(),
   initDockerClient: vi.fn(),
-  inspectContainer: vi.fn(),
-  kubernetesResourceAction: vi.fn(),
-  listComposeProjects: vi.fn(),
-  removeContainer: vi.fn(),
+  inspectContainer: mocks.inspectContainer,
+  kubernetesResourceAction: mocks.kubernetesResourceAction,
+  listComposeProjects: mocks.listComposeProjects,
+  removeContainer: mocks.removeContainer,
   streamContainerLogs: mocks.streamContainerLogs,
   watchEvents: mocks.watchEvents,
 }));
 
+vi.mock('../../docker/projects.js', () => ({
+  composeAction: mocks.composeAction,
+  listComposeProjects: mocks.listComposeProjects,
+}));
+
+vi.mock('../../docker/kubernetes.js', () => ({
+  getKubernetesPodLogs: mocks.getKubernetesPodLogs,
+  kubernetesResourceAction: mocks.kubernetesResourceAction,
+  parseKubernetesResourceId: (id: string) => {
+    const [prefix, kind, namespace, name] = id.split(':');
+    if (prefix !== 'k8s' || !kind || !namespace || !name) {
+      throw new Error('Invalid Kubernetes resource ID');
+    }
+    return { kind, namespace, name };
+  },
+}));
+
 vi.mock('../../docker/hosts.js', () => ({
   addHost: vi.fn(),
-  buildMultiHostGraph: mocks.buildMultiHostGraph,
   getHost: vi.fn(),
   initHosts: mocks.initHosts,
   listDockerHosts: mocks.listDockerHosts,
-  listDataSources: mocks.listDataSources,
+  listDockerGraphSources: mocks.listDockerGraphSources,
   listHosts: vi.fn(() => []),
   refreshHostStatus: mocks.refreshHostStatus,
   removeHost: vi.fn(),
@@ -79,7 +105,7 @@ vi.mock('../../docker/hosts.js', () => ({
 
 async function startTestServer(): Promise<ServerHandle> {
   const { startServer } = await import('../index');
-  return startServer({ port: 0, open: false });
+  return startServer({ port: 0, open: false, disableExternalPlugins: true });
 }
 
 function readWsMessage(ws: WebSocket): Promise<unknown> {
@@ -124,8 +150,52 @@ describe('server integration', () => {
     vi.clearAllMocks();
     mocks.checkConnection.mockResolvedValue(true);
     mocks.buildGraph.mockResolvedValue(mockGraph);
-    mocks.buildMultiHostGraph.mockResolvedValue(mockGraph);
+    mocks.listComposeProjects.mockResolvedValue([{ name: 'demo', running: 1, stopped: 0 }]);
+    mocks.composeAction.mockResolvedValue('restart completed for project demo');
+    mocks.getKubernetesPodLogs.mockResolvedValue('pod log\n');
+    mocks.kubernetesResourceAction.mockResolvedValue(undefined);
+    mocks.getContainerLogs.mockResolvedValue('hello\n');
+    mocks.getContainerStats.mockResolvedValue({
+      id: '123456789abc',
+      cpu: 12,
+      memory: 256,
+      memoryLimit: 512,
+      networkRx: 10,
+      networkTx: 20,
+      networkRxRate: 1,
+      networkTxRate: 2,
+    });
+    mocks.getContainerTop.mockResolvedValue({ titles: ['PID'], processes: [['1']] });
+    mocks.getContainerDiff.mockResolvedValue([{ kind: 'C', path: '/app/index.js' }]);
+    mocks.inspectContainer.mockResolvedValue({
+      id: '123456789abc',
+      env: [],
+      labels: {},
+      mounts: [],
+      restartPolicy: 'no',
+      entrypoint: null,
+      cmd: null,
+      workingDir: '/',
+      created: 'now',
+    });
+    mocks.diagnoseCrash.mockResolvedValue(null);
+    mocks.removeContainer.mockResolvedValue(undefined);
     mocks.refreshHostStatus.mockResolvedValue(undefined);
+    const source = {
+      id: 'local',
+      label: 'local',
+      kind: 'docker',
+      pluginId: 'core.docker',
+      capabilities: ['source.graph'],
+      status: 'connected',
+    };
+    mocks.listDockerGraphSources.mockReturnValue([
+      {
+        describe: () => source,
+        collectGraph: async () => ({ source, graph: mockGraph, collectedAt: 1 }),
+        startEvents: mocks.watchEvents,
+      },
+    ]);
     mocks.listDockerHosts.mockReturnValue([
       {
         name: 'local',
@@ -134,16 +204,6 @@ describe('server integration', () => {
         connected: true,
         containers: 1,
         version: 'test',
-      },
-    ]);
-    mocks.listDataSources.mockReturnValue([
-      {
-        id: 'local',
-        label: 'local',
-        kind: 'docker',
-        pluginId: 'core.docker',
-        capabilities: ['graph'],
-        status: 'connected',
       },
     ]);
     mocks.stopWatching = vi.fn();
@@ -162,7 +222,7 @@ describe('server integration', () => {
     expect(graphResponse.status).toBe(200);
     expect(await graphResponse.json()).toEqual(mockGraph);
     expect(mocks.buildGraph).not.toHaveBeenCalled();
-    expect(mocks.buildMultiHostGraph).toHaveBeenCalled();
+    expect(mocks.listDockerGraphSources).toHaveBeenCalled();
 
     const sourcesResponse = await fetch(`http://127.0.0.1:${server.port}/api/sources`);
     expect(sourcesResponse.status).toBe(200);
@@ -172,10 +232,143 @@ describe('server integration', () => {
         label: 'local',
         kind: 'docker',
         pluginId: 'core.docker',
-        capabilities: ['graph'],
+        capabilities: ['source.graph'],
         status: 'connected',
       },
     ]);
+
+    const pluginsResponse = await fetch(`http://127.0.0.1:${server.port}/api/plugins`);
+    expect(pluginsResponse.status).toBe(200);
+    const plugins = await pluginsResponse.json();
+    expect(plugins).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          manifest: expect.objectContaining({
+            id: 'core.docker',
+            name: 'Docker',
+            builtin: true,
+            capabilities: expect.arrayContaining(['source.graph', 'source.metrics']),
+          }),
+          status: 'started',
+          enabled: true,
+        }),
+        expect.objectContaining({
+          manifest: expect.objectContaining({
+            id: 'core.compose',
+            capabilities: expect.arrayContaining(['source.inventory', 'action.deploy']),
+          }),
+          status: 'started',
+          enabled: true,
+        }),
+        expect.objectContaining({
+          manifest: expect.objectContaining({
+            id: 'core.kubernetes',
+            capabilities: expect.arrayContaining(['source.logs', 'action.scale']),
+          }),
+          status: 'started',
+          enabled: true,
+        }),
+      ]),
+    );
+
+    const pluginErrorsResponse = await fetch(`http://127.0.0.1:${server.port}/api/plugins/errors`);
+    expect(pluginErrorsResponse.status).toBe(200);
+    expect(await pluginErrorsResponse.json()).toEqual([]);
+
+    const pluginUiResponse = await fetch(`http://127.0.0.1:${server.port}/api/plugins/ui`);
+    expect(pluginUiResponse.status).toBe(200);
+    expect(await pluginUiResponse.json()).toEqual([]);
+
+    const pluginConfigResponse = await fetch(`http://127.0.0.1:${server.port}/api/plugins/config`);
+    expect(pluginConfigResponse.status).toBe(200);
+    expect(await pluginConfigResponse.json()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'core.docker', values: {} }),
+        expect.objectContaining({ pluginId: 'core.compose', values: {} }),
+        expect.objectContaining({ pluginId: 'core.kubernetes', values: {} }),
+      ]),
+    );
+
+    const pluginSecretsResponse = await fetch(
+      `http://127.0.0.1:${server.port}/api/plugins/secrets`,
+    );
+    expect(pluginSecretsResponse.status).toBe(200);
+    expect(await pluginSecretsResponse.json()).toEqual([]);
+
+    const projectsResponse = await fetch(`http://127.0.0.1:${server.port}/api/projects`);
+    expect(projectsResponse.status).toBe(200);
+    expect(await projectsResponse.json()).toEqual([{ name: 'demo', running: 1, stopped: 0 }]);
+
+    const projectActionResponse = await fetch(
+      `http://127.0.0.1:${server.port}/api/projects/demo/restart`,
+      { method: 'POST' },
+    );
+    expect(projectActionResponse.status).toBe(200);
+    expect(await projectActionResponse.json()).toEqual({
+      ok: true,
+      message: 'restart completed for project demo',
+    });
+    expect(mocks.composeAction).toHaveBeenCalledWith('demo', 'restart');
+
+    const kubernetesLogsResponse = await fetch(
+      `http://127.0.0.1:${server.port}/api/kubernetes/logs`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'k8s:pod:default:web', tail: 10 }),
+      },
+    );
+    expect(kubernetesLogsResponse.status).toBe(200);
+    expect(await kubernetesLogsResponse.json()).toEqual({ logs: 'pod log\n' });
+    expect(mocks.getKubernetesPodLogs).toHaveBeenCalledWith('k8s:pod:default:web', 10);
+
+    const kubernetesActionResponse = await fetch(
+      `http://127.0.0.1:${server.port}/api/kubernetes/action`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: 'k8s:hpa:default:web',
+          action: 'set_hpa_constraints',
+          minReplicas: 2,
+          maxReplicas: 5,
+        }),
+      },
+    );
+    expect(kubernetesActionResponse.status).toBe(200);
+    expect(await kubernetesActionResponse.json()).toEqual({ ok: true });
+    expect(mocks.kubernetesResourceAction).toHaveBeenCalledWith(
+      'k8s:hpa:default:web',
+      'set_hpa_constraints',
+      { minReplicas: 2, maxReplicas: 5 },
+    );
+
+    const statsResponse = await fetch(
+      `http://127.0.0.1:${server.port}/api/containers/123456789abc/stats?nodeId=local:123456789abc`,
+    );
+    expect(statsResponse.status).toBe(200);
+    expect(await statsResponse.json()).toEqual({
+      id: 'local:123456789abc',
+      cpu: 12,
+      memory: 256,
+      memoryLimit: 512,
+      networkRx: 10,
+      networkTx: 20,
+      networkRxRate: 1,
+      networkTxRate: 2,
+    });
+    expect(mocks.getContainerStats).toHaveBeenCalledWith(
+      '123456789abc',
+      undefined,
+      'local:123456789abc',
+    );
+
+    const logsResponse = await fetch(
+      `http://127.0.0.1:${server.port}/api/containers/123456789abc/logs?tail=50`,
+    );
+    expect(logsResponse.status).toBe(200);
+    expect(await logsResponse.json()).toEqual({ logs: 'hello\n' });
+    expect(mocks.getContainerLogs).toHaveBeenCalledWith('123456789abc', 50, undefined);
 
     const invalidIdResponse = await fetch(
       `http://127.0.0.1:${server.port}/api/containers/not-a-container/logs`,

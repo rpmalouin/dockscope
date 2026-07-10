@@ -7,13 +7,16 @@
   import KeyboardHelp from './components/KeyboardHelp.svelte';
   import ProjectManager from './components/ProjectManager.svelte';
   import HostManager from './components/HostManager.svelte';
+  import PluginManager from './components/PluginManager.svelte';
   import ReplayBar from './components/ReplayBar.svelte';
   import Toast from './components/Toast.svelte';
   import { getRecorderState, togglePlay } from './stores/recorder.svelte';
+  import { addToast } from './stores/toast.svelte';
   import { UI } from './lib/constants';
   import { buildScopeOptions, type StatusFilter } from './lib/graphFilters';
   import { resolveSelectedNode } from './lib/graphSelection';
   import type { ServiceNode } from '../types';
+  import type { PluginUiExtension } from '../core/plugin-ui';
 
   const DEFAULT_COLOR_NETWORKS = true;
   const docker = getDockerState();
@@ -25,7 +28,9 @@
   let showHelp = $state(false);
   let showProjects = $state(false);
   let showHosts = $state(false);
+  let showPlugins = $state(false);
   let colorNetworks = $state(DEFAULT_COLOR_NETWORKS);
+  let pluginUiExtensions = $state<PluginUiExtension[]>([]);
   let showFilters = $state(false);
   let filterBtn = $state<HTMLElement | null>(null);
   let hudBar = $state<HTMLElement | null>(null);
@@ -39,6 +44,9 @@
   let latestVersion = $state<string | null>(null);
   let scopeOptions = $derived(buildScopeOptions(docker.graph.nodes));
   let activeSelectedNode = $derived(resolveSelectedNode(docker.graph.nodes, selectedNode));
+  let toolbarExtensions = $derived(
+    pluginUiExtensions.filter((extension) => extension.slot === 'toolbar'),
+  );
 
   $effect(() => {
     if (scopeFilter && !scopeOptions.some((option) => option.value === scopeFilter)) {
@@ -56,9 +64,50 @@
         }
       })
       .catch(() => {});
+    loadPluginUiExtensions();
     const cleanup = initDocker();
     return cleanup;
   });
+
+  function loadPluginUiExtensions() {
+    fetch('/api/plugins/ui')
+      .then((r) => r.json())
+      .then((data) => {
+        pluginUiExtensions = Array.isArray(data) ? data : [];
+      })
+      .catch(() => {
+        pluginUiExtensions = [];
+      });
+  }
+
+  async function handlePluginToolbar(extension: PluginUiExtension) {
+    if (extension.action?.type === 'open_url') {
+      window.open(extension.action.url, '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (extension.action?.type === 'run_command') {
+      const pluginId = extension.action.pluginId ?? extension.pluginId;
+      try {
+        const response = await fetch(
+          `/api/plugins/${encodeURIComponent(pluginId)}/commands/${encodeURIComponent(extension.action.commandId)}`,
+          { method: 'POST' },
+        );
+        const body = (await response.json().catch(() => null)) as {
+          ok?: boolean;
+          message?: string;
+          error?: string;
+        } | null;
+        if (!response.ok) {
+          throw new Error(body?.error || 'Plugin command failed');
+        }
+        addToast(body?.message || extension.title, body?.ok === false ? 'error' : 'success');
+      } catch (error) {
+        addToast(error instanceof Error ? error.message : 'Plugin command failed', 'error');
+      }
+      return;
+    }
+    showPlugins = true;
+  }
 
   function handleKeydown(e: KeyboardEvent) {
     const tag = (e.target as HTMLElement)?.tagName;
@@ -229,6 +278,43 @@
 
     <!-- Actions: projects + filters (compact) -->
     <div class="hud-group actions-group">
+      {#each toolbarExtensions as extension}
+        <button
+          class="hud-icon-btn"
+          onclick={() => handlePluginToolbar(extension)}
+          title={extension.description ?? extension.title}
+        >
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M12 2v6" /><path d="M8 2v6" /><path
+              d="M6 8h8l4 4v6a4 4 0 0 1-4 4h-2a4 4 0 0 1-4-4v-2"
+            /><path d="M2 14h8" />
+          </svg>
+        </button>
+      {/each}
+      <button class="hud-icon-btn" onclick={() => (showPlugins = true)} title="Plugins">
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M8 3v4M16 3v4M7 7h10v5a5 5 0 0 1-10 0V7Z" />
+          <path d="M12 17v4M8 21h8" />
+        </svg>
+      </button>
       <button class="hud-icon-btn" onclick={() => (showHosts = true)} title="Docker hosts">
         <svg
           width="12"
@@ -409,5 +495,8 @@
   {/if}
   {#if showHosts}
     <HostManager onClose={() => (showHosts = false)} />
+  {/if}
+  {#if showPlugins}
+    <PluginManager onClose={() => (showPlugins = false)} />
   {/if}
 </div>

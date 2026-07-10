@@ -3,6 +3,16 @@
   "version": "0.7.1",
   "description": "Visual, interactive Docker infrastructure debugger — 3D dependency graph with live health, logs, and metrics",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/plugin-sdk.d.ts",
+      "import": "./dist/plugin-sdk.js"
+    },
+    "./plugin-sdk": {
+      "types": "./dist/plugin-sdk.d.ts",
+      "import": "./dist/plugin-sdk.js"
+    }
+  },
   "bin": {
     "dockscope": "dist/cli.js"
   },

@@ -50,12 +50,26 @@ docker run --rm --pull always -p 4681:4681 -v /var/run/docker.sock:/var/run/dock
 
 Opens `http://localhost:4681`.
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-p, --port <port>` | `4681` | Server port (auto-increments if in use) |
-| `-b, --bind <address>` | `127.0.0.1` | Listen address (`0.0.0.0` inside a container, or set `DOCKSCOPE_BIND`) |
-| `--no-open` | — | Don't open browser |
-| `dockscope scan` | — | Output graph as JSON (no UI) |
+| Option                               | Default     | Description                                                            |
+| ------------------------------------ | ----------- | ---------------------------------------------------------------------- |
+| `-p, --port <port>`                  | `4681`      | Server port (auto-increments if in use)                                |
+| `-b, --bind <address>`               | `127.0.0.1` | Listen address (`0.0.0.0` inside a container, or set `DOCKSCOPE_BIND`) |
+| `--no-open`                          | —           | Don't open browser                                                     |
+| `--plugins <paths>`                  | —           | Load external plugins from a path-list                                 |
+| `--plugin-permissions <permissions>` | —           | Allowed external plugin permissions (`all` or comma-separated)         |
+| `--plugin-config <file>`             | —           | Plugin configuration JSON file                                         |
+| `--plugin-state <file>`              | —           | Plugin enabled/disabled state JSON file                                |
+| `--plugin-secrets <file>`            | —           | Plugin secrets JSON file                                               |
+| `--plugin-secret-key <key>`          | —           | Encrypt plugin secrets with a local key                                |
+| `--plugin-events <file>`             | —           | Plugin event history JSON file                                         |
+| `--no-external-plugins`              | —           | Disable external plugin loading                                        |
+| `dockscope scan`                     | —           | Output graph as JSON (no UI)                                           |
+| `dockscope plugin:init`              | —           | Scaffold a plugin directory                                            |
+| `dockscope plugin:keys`              | —           | Generate Ed25519 plugin package signing keys                           |
+| `dockscope plugin:validate`          | —           | Validate external plugin manifests                                     |
+| `dockscope plugin:test`              | —           | Validate and import external plugins                                   |
+| `dockscope plugin:pack`              | —           | Create a hash-verified plugin package                                  |
+| `dockscope plugin:install`           | —           | Install a directory or package into the local plugin registry           |
 
 ## Features
 
@@ -76,37 +90,53 @@ Opens `http://localhost:4681`.
 
 ## Keyboard Shortcuts
 
-| Key | Action |
-|-----|--------|
-| `/` or `Ctrl+K` | Focus search |
-| `Escape` | Close panel / clear search |
-| `F` | Zoom to fit |
-| `R` | Reset camera |
-| `C` | Center on selected node |
-| `I` | Toggle impact view |
-| `Space` | Play / pause replay |
-| `?` | Show shortcut help |
+| Key             | Action                     |
+| --------------- | -------------------------- |
+| `/` or `Ctrl+K` | Focus search               |
+| `Escape`        | Close panel / clear search |
+| `F`             | Zoom to fit                |
+| `R`             | Reset camera               |
+| `C`             | Center on selected node    |
+| `I`             | Toggle impact view         |
+| `Space`         | Play / pause replay        |
+| `?`             | Show shortcut help         |
 
 ## API
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/graph` | Full graph (nodes + links) |
-| GET | `/api/containers/:id/stats` | CPU, memory, network I/O |
-| GET | `/api/containers/:id/logs?tail=N` | Logs (default 200 lines) |
-| GET | `/api/containers/:id/inspect` | Env, labels, mounts, config |
-| GET | `/api/containers/:id/history` | Metric sparkline data |
-| GET | `/api/containers/:id/top` | Running processes |
-| GET | `/api/containers/:id/diff` | Filesystem changes |
-| GET | `/api/containers/:id/diagnostic` | Crash diagnostic analysis |
-| POST | `/api/containers/:id/{action}` | start, stop, restart, pause, unpause, kill |
-| DELETE | `/api/containers/:id?volumes=true` | Remove container |
-| GET | `/api/projects` | List compose projects |
-| POST | `/api/projects/:name/{action}` | up, down, stop, start, restart, destroy |
-| GET | `/api/system` | Docker version, CPUs, memory |
-| GET | `/api/health` | Docker connectivity check |
-| GET | `/api/version` | Current + latest version |
-| WS | `/ws` | Real-time graph, stats, events, logs, exec, anomalies, diagnostics |
+| Method | Path                                  | Description                                                        |
+| ------ | ------------------------------------- | ------------------------------------------------------------------ |
+| GET    | `/api/graph`                          | Full graph (nodes + links)                                         |
+| GET    | `/api/containers/:id/stats`           | CPU, memory, network I/O                                           |
+| GET    | `/api/containers/:id/logs?tail=N`     | Logs (default 200 lines)                                           |
+| GET    | `/api/containers/:id/inspect`         | Env, labels, mounts, config                                        |
+| GET    | `/api/containers/:id/history`         | Metric sparkline data                                              |
+| GET    | `/api/containers/:id/top`             | Running processes                                                  |
+| GET    | `/api/containers/:id/diff`            | Filesystem changes                                                 |
+| GET    | `/api/containers/:id/diagnostic`      | Crash diagnostic analysis                                          |
+| POST   | `/api/containers/:id/{action}`        | start, stop, restart, pause, unpause, kill                         |
+| DELETE | `/api/containers/:id?volumes=true`    | Remove container                                                   |
+| GET    | `/api/projects`                       | List compose projects                                              |
+| POST   | `/api/projects/:name/{action}`        | up, down, stop, start, restart, destroy                            |
+| GET    | `/api/system`                         | Docker version, CPUs, memory                                       |
+| GET    | `/api/health`                         | Docker connectivity check                                          |
+| GET    | `/api/version`                        | Current + latest version                                           |
+| GET    | `/api/plugins`                        | Runtime plugin registry                                            |
+| GET    | `/api/plugins/errors`                 | External plugin load/register failures                             |
+| GET    | `/api/plugins/ui`                     | Frontend plugin extension descriptors                              |
+| GET    | `/api/plugins/commands`               | Plugin command descriptors                                         |
+| POST   | `/api/plugins/:pluginId/commands/:id` | Run a plugin command                                               |
+| GET    | `/api/plugins/events`                 | Recent plugin event bus entries                                    |
+| GET    | `/api/plugins/review`                 | Plugin permission/capability review reports                        |
+| GET    | `/api/plugins/compatibility`          | Plugin compatibility warnings and migration metadata               |
+| POST   | `/api/plugins/:pluginId/migrate`      | Run a declared plugin compatibility migration                      |
+| GET    | `/api/plugins/config`                 | Plugin config schemas and values                                   |
+| PUT    | `/api/plugins/:pluginId/config`       | Update plugin config                                               |
+| POST   | `/api/plugins/:pluginId/reload`       | Reload an external plugin from disk                                |
+| GET    | `/api/plugins/secrets`                | Declared plugin secret status                                      |
+| PUT    | `/api/plugins/:pluginId/secrets/:key` | Store a declared plugin secret                                     |
+| POST   | `/api/plugins/:pluginId/enable`       | Enable an external plugin                                          |
+| POST   | `/api/plugins/:pluginId/disable`      | Disable an external plugin                                         |
+| WS     | `/ws`                                 | Real-time graph, stats, events, logs, exec, anomalies, diagnostics |
 
 ## Development
 
@@ -117,26 +147,26 @@ npm install
 npm run dev    # Starts on port 4681 with Vite HMR
 ```
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Dev server (backend + frontend with HMR) |
-| `npm run build` | Production build |
-| `npm run start` | Run production build |
-| `npm test` | Run unit tests (vitest) |
-| `npm run lint` | ESLint check |
-| `npm run format` | Prettier format |
-| `npm run typecheck` | TypeScript check (tsc + svelte-check) |
+| Command             | Description                              |
+| ------------------- | ---------------------------------------- |
+| `npm run dev`       | Dev server (backend + frontend with HMR) |
+| `npm run build`     | Production build                         |
+| `npm run start`     | Run production build                     |
+| `npm test`          | Run unit tests (vitest)                  |
+| `npm run lint`      | ESLint check                             |
+| `npm run format`    | Prettier format                          |
+| `npm run typecheck` | TypeScript check (tsc + svelte-check)    |
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
+| Layer        | Technology                                   |
+| ------------ | -------------------------------------------- |
 | **Frontend** | Svelte 5, Three.js, 3d-force-graph, xterm.js |
-| **Backend** | Express, WebSocket (ws), dockerode |
-| **Build** | Vite, TypeScript |
-| **Testing** | Vitest |
-| **CLI** | Commander |
-| **CI/CD** | GitHub Actions, commitlint, ESLint, Prettier |
+| **Backend**  | Express, WebSocket (ws), dockerode           |
+| **Build**    | Vite, TypeScript                             |
+| **Testing**  | Vitest                                       |
+| **CLI**      | Commander                                    |
+| **CI/CD**    | GitHub Actions, commitlint, ESLint, Prettier |
 
 ## Contributing
 

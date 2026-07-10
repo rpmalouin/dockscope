@@ -9,7 +9,7 @@ function descriptor(id: string): DataSourceDescriptor {
     label: id,
     kind: 'docker',
     pluginId: 'core.docker',
-    capabilities: ['graph'],
+    capabilities: ['source.graph'],
     status: 'connected',
   };
 }

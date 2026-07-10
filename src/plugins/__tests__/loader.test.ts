@@ -1,0 +1,386 @@
+import { access, mkdir, mkdtemp, writeFile } from 'fs/promises';
+import { tmpdir } from 'os';
+import path from 'path';
+import { describe, expect, it } from 'vitest';
+import { loadExternalPlugins, loadExternalPluginsFromEnv } from '../loader';
+
+async function exists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function createPluginDir(name = 'demo'): Promise<string> {
+  const root = await mkdtemp(path.join(tmpdir(), 'dockscope-plugin-'));
+  const pluginDir = path.join(root, name);
+  await mkdir(pluginDir);
+  return pluginDir;
+}
+
+async function writePlugin(
+  pluginDir: string,
+  manifest: Record<string, unknown>,
+  moduleSource: string,
+): Promise<void> {
+  await writeFile(path.join(pluginDir, 'plugin.json'), JSON.stringify(manifest), 'utf-8');
+  await writeFile(path.join(pluginDir, 'plugin.mjs'), moduleSource, 'utf-8');
+}
+
+function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 'external.demo',
+    name: 'External Demo',
+    version: '1.0.0',
+    dockscopeApiVersion: '1',
+    entry: './plugin.mjs',
+    capabilities: ['source.graph'],
+    permissions: [],
+    ...overrides,
+  };
+}
+
+describe('external plugin loader', () => {
+  it('loads a plugin from a direct plugin directory', async () => {
+    const pluginDir = await createPluginDir();
+    await writePlugin(
+      pluginDir,
+      manifest(),
+      `
+        export default function createPlugin({ manifest }) {
+          return {
+            manifest,
+            getGraphSources() {
+              return [];
+            }
+          };
+        }
+      `,
+    );
+
+    const result = await loadExternalPlugins({ paths: [pluginDir], permissions: 'all' });
+
+    expect(result.errors).toEqual([]);
+    expect(result.plugins).toHaveLength(1);
+    expect(result.configs.get('external.demo')).toEqual({});
+    expect(result.plugins[0].manifest).toMatchObject({
+      id: 'external.demo',
+      capabilities: ['source.graph'],
+    });
+    expect(result.plugins[0].getGraphSources?.()).toEqual([]);
+  });
+
+  it('discovers plugin directories inside a plugin root', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'dockscope-plugin-root-'));
+    const pluginDir = path.join(root, 'external-demo');
+    await mkdir(pluginDir);
+    await writePlugin(
+      pluginDir,
+      manifest({ id: 'external.nested' }),
+      `
+        export function createPlugin({ manifest }) {
+          return { manifest };
+        }
+      `,
+    );
+
+    const result = await loadExternalPlugins({ paths: [root], permissions: [] });
+
+    expect(result.errors).toEqual([]);
+    expect(result.plugins.map((plugin) => plugin.manifest.id)).toEqual(['external.nested']);
+  });
+
+  it('passes validated config into plugin factories', async () => {
+    const pluginDir = await createPluginDir();
+    await writePlugin(
+      pluginDir,
+      manifest({
+        capabilities: ['source.graph', 'ui.settings'],
+        config: {
+          fields: [{ key: 'enabled', label: 'Enabled', type: 'boolean', default: true }],
+        },
+      }),
+      `
+        export function createPlugin({ manifest, config }) {
+          return { manifest: { ...manifest, description: String(config.enabled) } };
+        }
+      `,
+    );
+
+    const result = await loadExternalPlugins({
+      paths: [pluginDir],
+      permissions: [],
+      getConfig: () => ({ enabled: false }),
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.configs.get('external.demo')).toEqual({ enabled: false });
+    expect(result.plugins[0].manifest.description).toBe('false');
+  });
+
+  it('exposes host APIs only when permissions allow them', async () => {
+    const pluginDir = await createPluginDir();
+    await writeFile(path.join(pluginDir, 'message.txt'), 'hello plugin\n', 'utf-8');
+    await writePlugin(
+      pluginDir,
+      manifest({ permissions: ['filesystem.read'] }),
+      `
+        export default async function createPlugin({ manifest, host }) {
+          const text = await host.readTextFile('message.txt');
+          return { manifest: { ...manifest, description: text.trim() } };
+        }
+      `,
+    );
+
+    const result = await loadExternalPlugins({
+      paths: [pluginDir],
+      permissions: ['filesystem.read'],
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.plugins[0].manifest.description).toBe('hello plugin');
+  });
+
+  it('reports host API permission failures as load errors', async () => {
+    const pluginDir = await createPluginDir();
+    await writePlugin(
+      pluginDir,
+      manifest(),
+      `
+        export default async function createPlugin({ manifest, host }) {
+          await host.readTextFile('message.txt');
+          return { manifest };
+        }
+      `,
+    );
+
+    const result = await loadExternalPlugins({ paths: [pluginDir], permissions: [] });
+
+    expect(result.plugins).toEqual([]);
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        id: 'external.demo',
+        phase: 'load',
+        message: 'Plugin "external.demo" requires permission "filesystem.read"',
+      }),
+    ]);
+  });
+
+  it('rejects plugins requiring permissions outside policy before import', async () => {
+    const pluginDir = await createPluginDir();
+    await writePlugin(
+      pluginDir,
+      manifest({ permissions: ['network.http'] }),
+      `
+        throw new Error('module should not be imported');
+      `,
+    );
+
+    const result = await loadExternalPlugins({ paths: [pluginDir], permissions: [] });
+
+    expect(result.plugins).toEqual([]);
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        id: 'external.demo',
+        phase: 'permission',
+        message: 'Plugin requires disallowed permissions: network.http',
+      }),
+    ]);
+  });
+
+  it('reports invalid manifests as manifest load errors', async () => {
+    const pluginDir = await createPluginDir();
+    await writePlugin(
+      pluginDir,
+      manifest({ capabilities: ['source.invalid'] }),
+      'export default function createPlugin({ manifest }) { return { manifest }; }',
+    );
+
+    const result = await loadExternalPlugins({ paths: [pluginDir], permissions: 'all' });
+
+    expect(result.plugins).toEqual([]);
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        phase: 'manifest',
+        message: 'Unsupported plugin capability: source.invalid',
+      }),
+    ]);
+  });
+
+  it('reports module contract errors as load errors', async () => {
+    const pluginDir = await createPluginDir();
+    await writePlugin(pluginDir, manifest(), 'export const value = 1;');
+
+    const result = await loadExternalPlugins({ paths: [pluginDir], permissions: 'all' });
+
+    expect(result.plugins).toEqual([]);
+    expect(result.errors).toEqual([
+      expect.objectContaining({
+        id: 'external.demo',
+        phase: 'load',
+        message: 'Plugin module must export default, createPlugin, or plugin',
+      }),
+    ]);
+  });
+
+  it('passes declared secrets through the restricted host API', async () => {
+    const pluginDir = await createPluginDir();
+    await writePlugin(
+      pluginDir,
+      manifest({
+        permissions: ['secrets.read'],
+        secrets: [{ key: 'token', label: 'Token' }],
+      }),
+      `
+        export default async function createPlugin({ manifest, host }) {
+          const token = await host.readSecret('token');
+          return { manifest: { ...manifest, description: token } };
+        }
+      `,
+    );
+
+    const result = await loadExternalPlugins({
+      paths: [pluginDir],
+      permissions: ['secrets.read'],
+      secretStore: {
+        get: async () => 'secret-token',
+        has: async () => true,
+        set: async () => {},
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.plugins[0].manifest.description).toBe('secret-token');
+  });
+
+  it('defers process-isolated plugin imports until command execution', async () => {
+    const pluginDir = await createPluginDir();
+    const markerPath = path.join(pluginDir, 'imported.txt');
+    const events: { pluginId: string; type: string; payload: unknown }[] = [];
+    await writePlugin(
+      pluginDir,
+      manifest({
+        capabilities: ['ui.command', 'source.events'],
+        commands: [{ id: 'ping', title: 'Ping' }],
+        execution: { isolation: 'process' },
+      }),
+      `
+        import { writeFileSync } from 'fs';
+        writeFileSync(${JSON.stringify(markerPath)}, 'imported');
+
+        export default function createPlugin({ manifest, host }) {
+          return {
+            manifest,
+            async runCommand(commandId, input) {
+              await host.publishEvent('ping.ran', { commandId, input });
+              return { ok: true, message: commandId };
+            }
+          };
+        }
+      `,
+    );
+
+    const result = await loadExternalPlugins({
+      paths: [pluginDir],
+      permissions: 'all',
+      publishEvent: (pluginId, type, payload) => {
+        events.push({ pluginId, type, payload });
+        return { id: 'event-1', pluginId, type, payload, time: 1 };
+      },
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(await exists(markerPath)).toBe(false);
+    await expect(result.plugins[0].runCommand?.('ping', { count: 1 })).resolves.toEqual({
+      ok: true,
+      message: 'ping',
+      data: undefined,
+    });
+    expect(await exists(markerPath)).toBe(true);
+    expect(events).toEqual([
+      {
+        pluginId: 'external.demo',
+        type: 'ping.ran',
+        payload: { commandId: 'ping', input: { count: 1 } },
+      },
+    ]);
+  });
+
+  it('loads process-isolated graph source providers through worker proxies', async () => {
+    const pluginDir = await createPluginDir();
+    await writePlugin(
+      pluginDir,
+      manifest({
+        capabilities: ['source.graph'],
+        execution: { isolation: 'process' },
+      }),
+      `
+        export default function createPlugin({ manifest }) {
+          return {
+            manifest,
+            getGraphSources() {
+              return [{
+                describe() {
+                  return {
+                    id: 'isolated-source',
+                    label: 'Isolated Source',
+                    kind: 'plugin',
+                    pluginId: manifest.id,
+                    capabilities: ['source.graph'],
+                    status: 'connected'
+                  };
+                },
+                async collectGraph() {
+                  return {
+                    source: this.describe(),
+                    collectedAt: 1,
+                    graph: {
+                      nodes: [],
+                      links: []
+                    }
+                  };
+                }
+              }];
+            }
+          };
+        }
+      `,
+    );
+
+    const result = await loadExternalPlugins({ paths: [pluginDir], permissions: 'all' });
+    const sources = result.plugins[0].getGraphSources?.() ?? [];
+
+    expect(result.errors).toEqual([]);
+    expect(sources.map((source) => source.describe().id)).toEqual(['isolated-source']);
+    await expect(sources[0].collectGraph()).resolves.toMatchObject({
+      source: { id: 'isolated-source', pluginId: 'external.demo' },
+      graph: { nodes: [], links: [] },
+    });
+  });
+
+  it('loads from environment options and supports disabling external plugins', async () => {
+    const pluginDir = await createPluginDir();
+    await writePlugin(
+      pluginDir,
+      manifest(),
+      'export default function createPlugin({ manifest }) { return { manifest }; }',
+    );
+
+    const loaded = await loadExternalPluginsFromEnv({
+      DOCKSCOPE_PLUGIN_PATHS: pluginDir,
+      DOCKSCOPE_PLUGIN_PERMISSIONS: 'all',
+    });
+    const disabled = await loadExternalPluginsFromEnv({
+      DOCKSCOPE_DISABLE_EXTERNAL_PLUGINS: '1',
+      DOCKSCOPE_PLUGIN_PATHS: pluginDir,
+      DOCKSCOPE_PLUGIN_PERMISSIONS: 'all',
+    });
+
+    expect(loaded.plugins.map((plugin) => plugin.manifest.id)).toEqual(['external.demo']);
+    expect(disabled.plugins).toEqual([]);
+    expect(disabled.configs).toBeInstanceOf(Map);
+    expect(disabled.errors).toEqual([]);
+  });
+});

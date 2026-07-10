@@ -1,24 +1,13 @@
 import type { Express, Request, Response } from 'express';
-import type Dockerode from 'dockerode';
-import {
-  buildGraph,
-  checkConnection,
-  composeAction,
-  containerAction,
-  diagnoseCrash,
-  getContainerLogs,
-  getContainerStats,
-  getContainerDiff,
-  getContainerTop,
-  getKubernetesPodLogs,
-  getSystemInfo,
-  inspectContainer,
-  kubernetesResourceAction,
-  listComposeProjects,
-  removeContainer,
-} from '../docker/client.js';
+import { buildGraph, checkConnection, getSystemInfo } from '../docker/client.js';
 import { compareEnvironments } from './compare.js';
-import { addHost, removeHost, listHosts, getHost, listDataSources } from '../docker/hosts.js';
+import { addHost, removeHost, listHosts, getHost } from '../docker/hosts.js';
+import { PluginOperationError, type PluginRegistry } from '../core/plugins.js';
+import { PluginConfigError } from '../core/plugin-config.js';
+import { PluginCommandError } from '../core/plugin-commands.js';
+import { PluginEventError } from '../core/plugin-events.js';
+import { PluginCompatibilityError } from '../core/plugin-compatibility.js';
+import type { EntityRef } from '../core/operations.js';
 import type { GraphData, ServerOptions } from '../types.js';
 import { errorMessage, shortId } from '../utils.js';
 import { PKG_VERSION, fetchLatestVersion } from '../version.js';
@@ -44,7 +33,15 @@ function asyncRoute(handler: (req: Request, res: Response) => Promise<void>) {
     try {
       await handler(req, res);
     } catch (err) {
-      const status = err instanceof RouteError ? err.status : 500;
+      const status =
+        err instanceof RouteError || err instanceof PluginOperationError
+          ? err.status
+          : err instanceof PluginConfigError ||
+              err instanceof PluginCommandError ||
+              err instanceof PluginEventError ||
+              err instanceof PluginCompatibilityError
+            ? 400
+            : 500;
       res.status(status).json({ error: errorMessage(err) });
     }
   };
@@ -60,17 +57,22 @@ function getStringQuery(req: Request, key: string): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
-function getRouteDockerClient(req: Request): Dockerode | undefined {
-  const hostName = getStringQuery(req, 'host');
-  if (!hostName) {
+function getNumberQuery(req: Request, key: string): number | undefined {
+  const value = getStringQuery(req, key);
+  if (!value) {
     return undefined;
   }
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
 
-  const host = getHost(hostName);
-  if (!host) {
-    throw new RouteError(404, `Unknown host: ${hostName}`);
-  }
-  return host.client;
+function getEntityRef(req: Request): EntityRef {
+  const sourceId = getStringQuery(req, 'host');
+  return {
+    entityId: getId(req),
+    ...(sourceId ? { sourceId } : {}),
+    nodeId: getMetricNodeId(req),
+  };
 }
 
 function getMetricNodeId(req: Request): string {
@@ -90,6 +92,7 @@ export function setupRoutes(
   opts: ServerOptions,
   metricHistory: Map<string, { cpu: number; memory: number; time: number }[]>,
   getGraph: () => GraphData,
+  plugins: PluginRegistry,
 ): void {
   // Validate container ID format
   app.param('id', (req, res, next) => {
@@ -111,7 +114,7 @@ export function setupRoutes(
     '/api/containers/:id/logs',
     asyncRoute(async (req, res) => {
       const tail = parseInt(req.query.tail as string) || 200;
-      res.json({ logs: await getContainerLogs(getId(req), tail, getRouteDockerClient(req)) });
+      res.json({ logs: await plugins.getLogs(getEntityRef(req), { tail }) });
     }),
   );
 
@@ -119,7 +122,7 @@ export function setupRoutes(
     '/api/containers/:id/stats',
     asyncRoute(async (req, res) => {
       const nodeId = getMetricNodeId(req);
-      const stats = await getContainerStats(getId(req), getRouteDockerClient(req), nodeId);
+      const stats = await plugins.getStats(getEntityRef(req));
       res.json({ ...stats, id: nodeId });
     }),
   );
@@ -135,7 +138,7 @@ export function setupRoutes(
     app.post(
       `/api/containers/:id/${action}`,
       asyncRoute(async (req, res) => {
-        await containerAction(getId(req), action, getRouteDockerClient(req));
+        await plugins.runLifecycleAction(getEntityRef(req), action);
         res.json({ ok: true });
       }),
     );
@@ -144,7 +147,7 @@ export function setupRoutes(
   app.delete(
     '/api/containers/:id',
     asyncRoute(async (req, res) => {
-      await removeContainer(getId(req), req.query.volumes === 'true', getRouteDockerClient(req));
+      await plugins.removeEntity(getEntityRef(req), { volumes: req.query.volumes === 'true' });
       res.json({ ok: true });
     }),
   );
@@ -152,21 +155,21 @@ export function setupRoutes(
   app.get(
     '/api/containers/:id/top',
     asyncRoute(async (req, res) => {
-      res.json(await getContainerTop(getId(req), getRouteDockerClient(req)));
+      res.json(await plugins.getTop(getEntityRef(req)));
     }),
   );
 
   app.get(
     '/api/containers/:id/diff',
     asyncRoute(async (req, res) => {
-      res.json(await getContainerDiff(getId(req), getRouteDockerClient(req)));
+      res.json(await plugins.getDiff(getEntityRef(req)));
     }),
   );
 
   app.get(
     '/api/containers/:id/inspect',
     asyncRoute(async (req, res) => {
-      res.json(await inspectContainer(getId(req), getRouteDockerClient(req)));
+      res.json(await plugins.inspect(getEntityRef(req)));
     }),
   );
 
@@ -178,7 +181,7 @@ export function setupRoutes(
   app.get(
     '/api/containers/:id/diagnostic',
     asyncRoute(async (req, res) => {
-      const diagnostic = await diagnoseCrash(getId(req), getRouteDockerClient(req));
+      const diagnostic = await plugins.diagnose(getEntityRef(req));
       res.json(diagnostic ? { ...diagnostic, containerId: getMetricNodeId(req) } : null);
     }),
   );
@@ -207,7 +210,7 @@ export function setupRoutes(
         res.status(400).json({ error: `Invalid Kubernetes action: ${action}` });
         return;
       }
-      await kubernetesResourceAction(id, action as 'delete' | 'restart' | 'set_hpa_constraints', {
+      await plugins.runResourceAction(id, action as 'delete' | 'restart' | 'set_hpa_constraints', {
         minReplicas,
         maxReplicas,
       });
@@ -223,7 +226,7 @@ export function setupRoutes(
         res.status(400).json({ error: 'id is required' });
         return;
       }
-      res.json({ logs: await getKubernetesPodLogs(id, tail || 200) });
+      res.json({ logs: await plugins.getResourceLogs(id, { tail: tail || 200 }) });
     }),
   );
 
@@ -243,8 +246,129 @@ export function setupRoutes(
   });
 
   app.get('/api/sources', (_req, res) => {
-    res.json(listDataSources());
+    res.json(plugins.listDataSources());
   });
+
+  app.get('/api/plugins', (_req, res) => {
+    res.json(plugins.listPlugins());
+  });
+
+  app.get('/api/plugins/errors', (_req, res) => {
+    res.json(plugins.listPluginErrors());
+  });
+
+  app.get('/api/plugins/ui', (_req, res) => {
+    res.json(plugins.listUiExtensions());
+  });
+
+  app.get('/api/plugins/commands', (_req, res) => {
+    res.json(plugins.listPluginCommands());
+  });
+
+  app.get('/api/plugins/events', (req, res) => {
+    res.json(
+      plugins.listPluginEvents({
+        pluginId: getStringQuery(req, 'pluginId'),
+        type: getStringQuery(req, 'type'),
+        since: getNumberQuery(req, 'since'),
+        limit: getNumberQuery(req, 'limit'),
+      }),
+    );
+  });
+
+  app.get('/api/plugins/compatibility', (_req, res) => {
+    res.json(plugins.listPluginCompatibility(PKG_VERSION));
+  });
+
+  app.get('/api/plugins/review', (_req, res) => {
+    res.json(plugins.listPluginReviews(PKG_VERSION));
+  });
+
+  app.get('/api/plugins/config', (_req, res) => {
+    res.json(plugins.listPluginConfigs());
+  });
+
+  app.get(
+    '/api/plugins/secrets',
+    asyncRoute(async (_req, res) => {
+      res.json(await plugins.listPluginSecrets());
+    }),
+  );
+
+  app.get(
+    '/api/plugins/:pluginId/config',
+    asyncRoute(async (req, res) => {
+      res.json(plugins.getPluginConfig(req.params.pluginId as string));
+    }),
+  );
+
+  app.put(
+    '/api/plugins/:pluginId/config',
+    asyncRoute(async (req, res) => {
+      res.json(await plugins.updatePluginConfig(req.params.pluginId as string, req.body));
+    }),
+  );
+
+  app.put(
+    '/api/plugins/:pluginId/secrets/:secretKey',
+    asyncRoute(async (req, res) => {
+      const { value } = req.body as { value?: unknown };
+      res.json(
+        await plugins.updatePluginSecret(
+          req.params.pluginId as string,
+          req.params.secretKey as string,
+          value,
+        ),
+      );
+    }),
+  );
+
+  app.post(
+    '/api/plugins/:pluginId/enable',
+    asyncRoute(async (req, res) => {
+      res.json(await plugins.enablePlugin(req.params.pluginId as string));
+    }),
+  );
+
+  app.post(
+    '/api/plugins/:pluginId/disable',
+    asyncRoute(async (req, res) => {
+      res.json(await plugins.disablePlugin(req.params.pluginId as string));
+    }),
+  );
+
+  app.post(
+    '/api/plugins/:pluginId/reload',
+    asyncRoute(async (req, res) => {
+      res.json(await plugins.reloadPlugin(req.params.pluginId as string));
+    }),
+  );
+
+  app.post(
+    '/api/plugins/:pluginId/commands/:commandId',
+    asyncRoute(async (req, res) => {
+      const { input } = req.body as { input?: unknown };
+      res.json(
+        await plugins.runPluginCommand(
+          req.params.pluginId as string,
+          req.params.commandId as string,
+          input,
+        ),
+      );
+    }),
+  );
+
+  app.post(
+    '/api/plugins/:pluginId/migrate',
+    asyncRoute(async (req, res) => {
+      const { from, to, input } = req.body as { from?: string; to?: string; input?: unknown };
+      if (!from || !to) {
+        res.status(400).json({ error: 'from and to are required' });
+        return;
+      }
+      res.json(await plugins.runPluginMigration(req.params.pluginId as string, from, to, input));
+    }),
+  );
 
   app.post(
     '/api/hosts',
@@ -285,7 +409,7 @@ export function setupRoutes(
         res.json([]);
         return;
       }
-      res.json(await listComposeProjects());
+      res.json(await plugins.listProjects());
     }),
   );
 
@@ -302,7 +426,7 @@ export function setupRoutes(
         res.status(400).json({ error: `Invalid action: ${action}` });
         return;
       }
-      res.json({ ok: true, message: await composeAction(name, action) });
+      res.json({ ok: true, message: await plugins.runProjectAction(name, action) });
     }),
   );
 

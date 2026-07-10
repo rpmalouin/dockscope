@@ -81,7 +81,7 @@ describe('core graph helpers', () => {
           label: 'remote-a',
           kind: 'docker',
           pluginId: 'core.docker',
-          capabilities: ['graph'],
+          capabilities: ['source.graph'],
           status: 'connected',
         },
         graph,
