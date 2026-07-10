@@ -53,6 +53,7 @@ Opens `http://localhost:4681`.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `-p, --port <port>` | `4681` | Server port (auto-increments if in use) |
+| `-b, --bind <address>` | `127.0.0.1` | Listen address (`0.0.0.0` inside a container, or set `DOCKSCOPE_BIND`) |
 | `--no-open` | — | Don't open browser |
 | `dockscope scan` | — | Output graph as JSON (no UI) |
 

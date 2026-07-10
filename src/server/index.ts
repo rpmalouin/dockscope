@@ -111,7 +111,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(opts.port, '127.0.0.1', () => {
+    server.listen(opts.port, opts.bind ?? '127.0.0.1', () => {
       server.off('error', reject);
       const address = server.address();
       const port = typeof address === 'object' && address ? address.port : opts.port;

@@ -11,6 +11,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist dist/
 ENV DOCKSCOPE_NO_COMPOSE=1
+ENV DOCKSCOPE_BIND=0.0.0.0
 EXPOSE 4681
 ENTRYPOINT ["node", "dist/cli.js"]
 CMD ["up", "--no-open"]

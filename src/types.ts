@@ -155,6 +155,7 @@ export interface ServerOptions {
   port: number;
   open: boolean;
   host?: string;
+  bind?: string;
 }
 
 export interface ServerHandle {
