@@ -10,6 +10,9 @@ const COMPOSE_CAPABILITIES = [
 ] as const satisfies readonly PluginCapability[];
 
 const composeProjectProvider: ProjectProvider = {
+  id: 'compose',
+  canHandle: async (project) =>
+    (await listComposeProjects()).some((candidate) => candidate.name === project),
   listProjects: listComposeProjects,
   runProjectAction: composeAction,
 };
@@ -20,7 +23,9 @@ export function createComposePlugin(): DockscopePlugin {
       id: 'core.compose',
       name: 'Docker Compose',
       version: '1.0.0',
+      manifestVersion: '1',
       dockscopeApiVersion: '1',
+      hostApiVersion: '1',
       description: 'Built-in Docker Compose project inventory and lifecycle provider.',
       builtin: true,
       capabilities: COMPOSE_CAPABILITIES,

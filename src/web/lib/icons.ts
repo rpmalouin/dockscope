@@ -40,6 +40,22 @@ export const ICONS = {
     body: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />',
     strokeWidth: 2,
   },
+  external: {
+    body: '<path d="M14 3h7v7" /><path d="M10 14 21 3" /><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />',
+    strokeWidth: 2,
+  },
+  plug: {
+    body: '<path d="M8 3v4M16 3v4M7 7h10v5a5 5 0 0 1-10 0V7Z" /><path d="M12 17v4M8 21h8" />',
+    strokeWidth: 2,
+  },
+  trash: {
+    body: '<path d="M3 6h18" /><path d="M8 6V4h8v2" /><path d="M19 6l-1 15H6L5 6" /><path d="M10 11v5M14 11v5" />',
+    strokeWidth: 2,
+  },
+  scale: {
+    body: '<path d="M4 7h16M7 4v6M17 4v6M4 17h16M9 14v6M15 14v6" />',
+    strokeWidth: 2,
+  },
 } as const satisfies Record<string, IconDef>;
 
 export type IconName = keyof typeof ICONS;

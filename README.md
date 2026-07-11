@@ -25,7 +25,7 @@ A browser-based 3D dependency graph of your Docker services with live health, lo
 
 ## Quick Start
 
-> **Prerequisites:** [Node.js](https://nodejs.org/) (v20+) and [Docker](https://docs.docker.com/get-docker/) must be installed and running. Kubernetes graph support is enabled automatically when DockScope can load a kubeconfig or in-cluster service account with read access to the Kubernetes API.
+> **Prerequisites:** [Node.js](https://nodejs.org/) (v20+) and [Docker](https://docs.docker.com/get-docker/) must be installed and running. Kubernetes support is provided by the official external Kubernetes plugin.
 
 ```bash
 npx dockscope up
@@ -62,14 +62,27 @@ Opens `http://localhost:4681`.
 | `--plugin-secrets <file>`            | —           | Plugin secrets JSON file                                               |
 | `--plugin-secret-key <key>`          | —           | Encrypt plugin secrets with a local key                                |
 | `--plugin-events <file>`             | —           | Plugin event history JSON file                                         |
+| `--plugin-approvals <file>`          | —           | Plugin approval JSON file                                              |
+| `--plugin-catalog <source>`          | —           | Plugin catalog JSON file or URL                                        |
+| `--plugin-catalog-public-key <file>` | —           | Verify the configured plugin catalog signature                         |
+| `--plugin-catalog-trust <file>`      | —           | Catalog signer rotation and revocation trust store                     |
+| `--no-official-plugin-catalog`       | —           | Disable the default signed DockScope catalog                           |
+| `--plugin-registry <dir>`            | `~/.dockscope/plugins` | Local plugin registry directory                              |
+| `--allow-unsigned-plugins`           | —           | Allow unsigned catalog entries for local marketplace development        |
 | `--no-external-plugins`              | —           | Disable external plugin loading                                        |
 | `dockscope scan`                     | —           | Output graph as JSON (no UI)                                           |
 | `dockscope plugin:init`              | —           | Scaffold a plugin directory                                            |
 | `dockscope plugin:keys`              | —           | Generate Ed25519 plugin package signing keys                           |
 | `dockscope plugin:validate`          | —           | Validate external plugin manifests                                     |
 | `dockscope plugin:test`              | —           | Validate and import external plugins                                   |
+| `dockscope plugin:dev`               | —           | Run DockScope with local plugin development defaults                   |
+| `dockscope plugin:doctor`            | —           | Check plugin paths and catalog configuration                           |
 | `dockscope plugin:pack`              | —           | Create a hash-verified plugin package                                  |
 | `dockscope plugin:install`           | —           | Install a directory or package into the local plugin registry           |
+| `dockscope plugin:catalog`           | —           | List plugins from a catalog                                            |
+| `dockscope plugin:catalog:entry`     | —           | Generate a catalog entry from a signed package                         |
+| `dockscope plugin:catalog:sign`      | —           | Sign a catalog JSON file                                               |
+| `dockscope plugin:catalog:install`   | —           | Install a signed package from a catalog                                |
 
 ## Features
 
@@ -86,7 +99,9 @@ Opens `http://localhost:4681`.
 - **Search & Filters** — Real-time search by name/image, status filters (running/stopped/unhealthy), network color toggle.
 - **Session Recording & Replay** — Record an incident (graph state, events, metrics over time) with the `REC` button in the status bar; stopping saves it as a JSON file. Replay it in place or load a recording file (upload button) on any DockScope instance, with a timeline scrubber, event markers, play/pause (`Space`), and 1–8× playback speed for postmortem analysis. During replay, live updates pause and container actions are disabled.
 - **Snapshot Export** — Export the current graph view from the toolbar (bottom-left) as a PNG (exact render) or SVG (vector projection with labels, dependency arrows, and a status legend) for documentation and READMEs. Both respect active search/status filters.
-- **Kubernetes Graph** — Pods, Services, Ingresses, and HPAs are rendered alongside Docker resources when Kubernetes API credentials are available. Services link to selected pods, Ingresses link to Services, HPAs show current vs desired replicas, and the HUD can filter Kubernetes resources by namespace.
+- **Kubernetes Plugin** — The official external Kubernetes plugin renders Pods, Services, Ingresses, and HPAs alongside Docker resources, with Pod logs, restart/delete actions, and HPA replica controls through `kubectl`.
+- **Plugin Marketplace** — The signed official catalog is enabled by default; plugins can be installed, updated, and removed with a pre-install review of signature, package hash, permissions, compatibility, and release notes.
+- **Plugin Runtime Isolation** — External plugins run in child processes with operation timeouts, memory limits, health telemetry, crash recovery, and automatic quarantine after repeated crashes.
 
 ## Keyboard Shortcuts
 
@@ -106,29 +121,39 @@ Opens `http://localhost:4681`.
 | Method | Path                                  | Description                                                        |
 | ------ | ------------------------------------- | ------------------------------------------------------------------ |
 | GET    | `/api/graph`                          | Full graph (nodes + links)                                         |
-| GET    | `/api/containers/:id/stats`           | CPU, memory, network I/O                                           |
-| GET    | `/api/containers/:id/logs?tail=N`     | Logs (default 200 lines)                                           |
-| GET    | `/api/containers/:id/inspect`         | Env, labels, mounts, config                                        |
-| GET    | `/api/containers/:id/history`         | Metric sparkline data                                              |
-| GET    | `/api/containers/:id/top`             | Running processes                                                  |
-| GET    | `/api/containers/:id/diff`            | Filesystem changes                                                 |
-| GET    | `/api/containers/:id/diagnostic`      | Crash diagnostic analysis                                          |
-| POST   | `/api/containers/:id/{action}`        | start, stop, restart, pause, unpause, kill                         |
-| DELETE | `/api/containers/:id?volumes=true`    | Remove container                                                   |
-| GET    | `/api/projects`                       | List compose projects                                              |
-| POST   | `/api/projects/:name/{action}`        | up, down, stop, start, restart, destroy                            |
-| GET    | `/api/system`                         | Docker version, CPUs, memory                                       |
-| GET    | `/api/health`                         | Docker connectivity check                                          |
+| GET    | `/api/entities/:id/operations`        | Matching plugin operation descriptors                              |
+| GET    | `/api/entities/:id/actions`           | Contextual plugin-owned actions                                    |
+| POST   | `/api/entities/:id/actions/:pluginId/:actionId` | Run an exact entity action                              |
+| GET    | `/api/entities/:id/{stats,logs,inspect,history,top,diff,diagnostic}` | Generic entity reads          |
+| GET    | `/api/projects`                       | Plugin-owned project inventory                                     |
+| POST   | `/api/projects/:name/{action}`        | Run a project action with owner query parameters                   |
+| GET    | `/api/systems`                        | Plugin-owned runtime/system inventory                              |
+| GET    | `/api/connections/providers`          | Typed connection provider forms                                    |
+| GET    | `/api/connections`                    | Configured source connections                                      |
+| POST   | `/api/connections/:pluginId/:providerId` | Add a provider connection                                       |
+| DELETE | `/api/connections/:pluginId/:providerId/:connectionId` | Remove a provider connection                   |
+| GET    | `/api/health`                         | Aggregate plugin source health                                     |
 | GET    | `/api/version`                        | Current + latest version                                           |
 | GET    | `/api/plugins`                        | Runtime plugin registry                                            |
 | GET    | `/api/plugins/errors`                 | External plugin load/register failures                             |
+| GET    | `/api/plugins/warnings`               | External plugin manifest deprecation warnings                      |
 | GET    | `/api/plugins/ui`                     | Frontend plugin extension descriptors                              |
+| GET    | `/api/plugins/:pluginId/frontend`     | Sandboxed frontend bundle source                                   |
+| POST   | `/api/plugins/:pluginId/ui/:id/action` | Run a declared plugin UI action                                  |
 | GET    | `/api/plugins/commands`               | Plugin command descriptors                                         |
 | POST   | `/api/plugins/:pluginId/commands/:id` | Run a plugin command                                               |
 | GET    | `/api/plugins/events`                 | Recent plugin event bus entries                                    |
 | GET    | `/api/plugins/review`                 | Plugin permission/capability review reports                        |
+| GET    | `/api/plugins/catalog`                | Configured plugin catalog entries                                  |
+| GET    | `/api/plugins/marketplace`            | Catalog entries merged with local install state                    |
+| POST   | `/api/plugins/marketplace/:pluginId/install` | Install from the configured catalog                         |
+| POST   | `/api/plugins/marketplace/:pluginId/update` | Update an installed catalog plugin                            |
+| DELETE | `/api/plugins/marketplace/:pluginId`  | Uninstall a local marketplace plugin                              |
+| GET    | `/api/plugins/approvals`              | Persisted plugin approvals                                         |
 | GET    | `/api/plugins/compatibility`          | Plugin compatibility warnings and migration metadata               |
 | POST   | `/api/plugins/:pluginId/migrate`      | Run a declared plugin compatibility migration                      |
+| POST   | `/api/plugins/:pluginId/approve`      | Approve the current plugin fingerprint                             |
+| POST   | `/api/plugins/:pluginId/revoke-approval` | Revoke plugin approval                                          |
 | GET    | `/api/plugins/config`                 | Plugin config schemas and values                                   |
 | PUT    | `/api/plugins/:pluginId/config`       | Update plugin config                                               |
 | POST   | `/api/plugins/:pluginId/reload`       | Reload an external plugin from disk                                |
@@ -156,6 +181,7 @@ npm run dev    # Starts on port 4681 with Vite HMR
 | `npm run lint`      | ESLint check                             |
 | `npm run format`    | Prettier format                          |
 | `npm run typecheck` | TypeScript check (tsc + svelte-check)    |
+| `npm run plugins:catalog` | Build packages and catalog for official plugins |
 
 ## Tech Stack
 

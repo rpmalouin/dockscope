@@ -4,13 +4,17 @@ import { WebSocketServer, WebSocket } from 'ws';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { checkConnection, initDockerClient } from '../docker/client.js';
+import { initDockerClient } from '../docker/client.js';
 import { initHosts } from '../docker/hosts.js';
 import { setupRoutes } from './routes.js';
 import type { ServerOptions, ServerHandle, WSMessage } from '../types.js';
 import { setupWebSocketHandlers } from './websocket.js';
 import { createServerMonitor } from './monitor.js';
 import { createPluginRegistry } from '../plugins/internal.js';
+import {
+  createPluginMarketplaceService,
+  pluginRegistryDirFromEnv,
+} from '../plugins/marketplace.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -37,8 +41,39 @@ function pluginEnvironment(opts: ServerOptions): NodeJS.ProcessEnv {
   if (opts.pluginEvents !== undefined) {
     env.DOCKSCOPE_PLUGIN_EVENTS = opts.pluginEvents;
   }
+  if (opts.pluginApprovals !== undefined) {
+    env.DOCKSCOPE_PLUGIN_APPROVALS = opts.pluginApprovals;
+  }
+  if (opts.pluginCatalog !== undefined) {
+    env.DOCKSCOPE_PLUGIN_CATALOG = opts.pluginCatalog;
+  }
+  if (opts.pluginCatalogPublicKey !== undefined) {
+    env.DOCKSCOPE_PLUGIN_CATALOG_PUBLIC_KEY = opts.pluginCatalogPublicKey;
+  }
+  if (opts.pluginCatalogTrust !== undefined) {
+    env.DOCKSCOPE_PLUGIN_CATALOG_TRUST = opts.pluginCatalogTrust;
+  }
+  if (opts.disableOfficialPluginCatalog) {
+    env.DOCKSCOPE_DISABLE_OFFICIAL_PLUGIN_CATALOG = '1';
+  }
+  if (opts.pluginRegistry !== undefined) {
+    env.DOCKSCOPE_PLUGIN_REGISTRY = opts.pluginRegistry;
+  }
+  if (opts.allowUnsignedPlugins) {
+    env.DOCKSCOPE_PLUGIN_ALLOW_UNSIGNED = '1';
+  }
   if (opts.disableExternalPlugins) {
     env.DOCKSCOPE_DISABLE_EXTERNAL_PLUGINS = '1';
+  }
+  if (!opts.disableExternalPlugins) {
+    const registryDir = pluginRegistryDirFromEnv(env);
+    const paths = (env.DOCKSCOPE_PLUGIN_PATHS ?? '')
+      .split(path.delimiter)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (!paths.includes(registryDir)) {
+      env.DOCKSCOPE_PLUGIN_PATHS = [registryDir, ...paths].join(path.delimiter);
+    }
   }
   return env;
 }
@@ -48,7 +83,9 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
     initDockerClient(opts.host);
   }
   initHosts(opts.host);
-  const plugins = await createPluginRegistry(pluginEnvironment(opts));
+  const pluginEnv = pluginEnvironment(opts);
+  const plugins = await createPluginRegistry(pluginEnv);
+  const marketplace = createPluginMarketplaceService(pluginEnv, plugins);
   await plugins.startAll();
 
   const app = express();
@@ -57,14 +94,6 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
 
   const server = createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
-
-  const connected = await checkConnection();
-  if (!connected) {
-    console.error('Cannot connect to Docker daemon. Is Docker running?');
-    console.error('If running inside a container, mount the Docker socket:');
-    console.error('  docker run -v /var/run/docker.sock:/var/run/docker.sock ...');
-    process.exit(1);
-  }
 
   // Metric history storage (shared with routes)
   const metricHistory = new Map<string, { cpu: number; memory: number; time: number }[]>();
@@ -79,7 +108,7 @@ export async function startServer(opts: ServerOptions): Promise<ServerHandle> {
   };
 
   const monitor = createServerMonitor({ metricHistory, broadcast, plugins });
-  setupRoutes(app, opts, metricHistory, monitor.getGraph, plugins);
+  setupRoutes(app, opts, metricHistory, monitor.getGraph, plugins, marketplace);
 
   // Frontend: Vite dev server (HMR) or static files (production)
   if (process.env.DOCKSCOPE_DEV === '1') {

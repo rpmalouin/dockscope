@@ -1,6 +1,7 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  PLUGIN_CRASH_QUARANTINE_THRESHOLD,
   PluginManifestError,
   PluginRegistry,
   validatePluginManifest,
@@ -11,12 +12,22 @@ import {
 } from '../plugins';
 import type { GraphSourceAdapter } from '../model';
 import type {
+  EntityActionProvider,
   EntityExecProvider,
   EntityLogStreamProvider,
   EntityStatsProvider,
   ProjectProvider,
   ResourceProvider,
 } from '../operations';
+import type { MetricAnalysisProvider } from '../plugin-analysis';
+import type { PluginSystemProvider } from '../plugin-system';
+import type { PluginConnectionProvider } from '../plugin-connections';
+
+const TEST_API_VERSIONS = {
+  manifestVersion: '1',
+  dockscopeApiVersion: '1',
+  hostApiVersion: '1',
+} as const;
 
 function plugin(overrides: Partial<DockscopePlugin> = {}): DockscopePlugin {
   return {
@@ -24,7 +35,7 @@ function plugin(overrides: Partial<DockscopePlugin> = {}): DockscopePlugin {
       id: 'test.plugin',
       name: 'Test Plugin',
       version: '1.0.0',
-      dockscopeApiVersion: '1',
+      ...TEST_API_VERSIONS,
       capabilities: ['source.graph'],
       permissions: [],
     },
@@ -42,7 +53,7 @@ function pluginWithCapabilities(
       id: 'test.plugin',
       name: 'Test Plugin',
       version: '1.0.0',
-      dockscopeApiVersion: '1',
+      ...TEST_API_VERSIONS,
       capabilities,
       permissions: [],
     },
@@ -70,11 +81,140 @@ describe('PluginRegistry', () => {
     expect(registry.listPlugins()[0].status).toBe('stopped');
   });
 
+  it('quarantines crash-looping external plugins and recovers on explicit enable', async () => {
+    const start = vi.fn();
+    const stop = vi.fn();
+    const saveRuntimeState = vi.fn();
+    const stateWriter: PluginStateWriter = {
+      saveEnabled: vi.fn(),
+      saveRuntimeState,
+    };
+    const registry = new PluginRegistry(undefined, stateWriter);
+    registry.register(
+      plugin({
+        manifest: {
+          id: 'test.unstable',
+          name: 'Unstable',
+          version: '1.0.0',
+          ...TEST_API_VERSIONS,
+          capabilities: ['ui.command'],
+          permissions: [],
+          execution: { isolation: 'process', memoryLimitMb: 64 },
+        },
+        start,
+        stop,
+        getRuntimeHealth: async () => ({
+          state: 'stopped',
+          restartCount: PLUGIN_CRASH_QUARANTINE_THRESHOLD,
+          pendingOperations: 0,
+          openStreams: 0,
+          stderrBytes: 128,
+          operationTimeoutMs: 5000,
+          memoryLimitMb: 64,
+          maxStderrBytes: 1000,
+        }),
+      }),
+    );
+    await registry.startAll();
+
+    for (let index = 0; index < PLUGIN_CRASH_QUARANTINE_THRESHOLD; index += 1) {
+      await registry.recordRuntimeCrash('test.unstable', {
+        message: `crash ${index + 1}`,
+        restartCount: index + 1,
+        time: 10_000 + index,
+      });
+    }
+
+    expect(registry.listPlugins()[0]).toMatchObject({
+      enabled: false,
+      status: 'quarantined',
+      crashCount: PLUGIN_CRASH_QUARANTINE_THRESHOLD,
+      quarantineReason: '3 crashes within 60s',
+    });
+    expect(stop).toHaveBeenCalledOnce();
+    await expect(registry.listPluginRuntimeHealth()).resolves.toEqual([
+      expect.objectContaining({
+        pluginId: 'test.unstable',
+        state: 'stopped',
+        crashCount: PLUGIN_CRASH_QUARANTINE_THRESHOLD,
+        restartCount: PLUGIN_CRASH_QUARANTINE_THRESHOLD,
+        quarantinedAt: 10_002,
+      }),
+    ]);
+    expect(saveRuntimeState).toHaveBeenLastCalledWith(
+      'test.unstable',
+      expect.objectContaining({ enabled: false, quarantined: true, crashCount: 3 }),
+    );
+
+    await registry.enablePlugin('test.unstable');
+    expect(registry.listPlugins()[0]).toMatchObject({
+      enabled: true,
+      status: 'started',
+      crashCount: 0,
+      quarantineReason: undefined,
+    });
+    expect(start).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves a persisted crash window when startup itself crashes', async () => {
+    const now = Date.now();
+    const registry = new PluginRegistry();
+    const unstable = plugin({
+      manifest: {
+        id: 'test.persisted-crashes',
+        name: 'Persisted Crashes',
+        version: '1.0.0',
+        ...TEST_API_VERSIONS,
+        capabilities: ['ui.command'],
+        permissions: [],
+        execution: { isolation: 'process' },
+      },
+      start: async () => {
+        await registry.recordRuntimeCrash('test.persisted-crashes', {
+          message: 'startup crash',
+          restartCount: 3,
+          time: now,
+        });
+        throw new Error('startup crash');
+      },
+    });
+    registry.register(unstable, undefined, {
+      recentCrashTimes: [now - 2000, now - 1000],
+      crashCount: 2,
+    });
+
+    await expect(registry.startPlugin('test.persisted-crashes')).rejects.toThrow('startup crash');
+    expect(registry.listPlugins()[0]).toMatchObject({
+      enabled: false,
+      status: 'quarantined',
+      crashCount: 3,
+      lastCrashError: 'startup crash',
+    });
+  });
+
   it('rejects duplicate plugin ids', () => {
     const registry = new PluginRegistry();
     registry.register(plugin());
 
     expect(() => registry.register(plugin())).toThrow('Plugin already registered: test.plugin');
+  });
+
+  it('starts and unregisters external plugins at runtime', async () => {
+    const start = vi.fn();
+    const stop = vi.fn();
+    const registry = new PluginRegistry();
+
+    registry.register(plugin({ start, stop }));
+
+    await expect(registry.startPlugin('test.plugin')).resolves.toMatchObject({
+      status: 'started',
+    });
+    expect(start).toHaveBeenCalledOnce();
+
+    await expect(registry.unregisterPlugin('test.plugin')).resolves.toEqual({ ok: true });
+
+    expect(stop).toHaveBeenCalledOnce();
+    expect(registry.listPlugins()).toEqual([]);
   });
 
   it('validates manifests before registration', () => {
@@ -174,6 +314,48 @@ describe('PluginRegistry', () => {
     ).toThrow('requires capability "ui.toolbarAction"');
   });
 
+  it('requires frontend bundles and slots to declare their capabilities', () => {
+    expect(() =>
+      validatePluginManifest({
+        id: 'custom.frontend',
+        name: 'Custom Frontend',
+        version: '1.2.3',
+        capabilities: ['ui.sidebarPanel'],
+        permissions: [],
+        frontend: { entry: './frontend.mjs', slots: ['sidebar'] },
+      }),
+    ).toThrow('Plugin frontend requires capability "ui.frontend"');
+
+    expect(() =>
+      validatePluginManifest({
+        id: 'custom.frontend',
+        name: 'Custom Frontend',
+        version: '1.2.3',
+        capabilities: ['ui.frontend'],
+        permissions: [],
+        frontend: { entry: './frontend.mjs', slots: ['sidebar'] },
+      }),
+    ).toThrow('Plugin frontend slot "sidebar" requires capability "ui.sidebarPanel"');
+
+    expect(() =>
+      validatePluginManifest({
+        id: 'custom.frontend',
+        name: 'Custom Frontend',
+        version: '1.2.3',
+        capabilities: ['ui.sidebarPanel'],
+        permissions: [],
+        ui: [
+          {
+            id: 'overview',
+            slot: 'sidebar',
+            title: 'Overview',
+            frontendView: 'overview',
+          },
+        ],
+      }),
+    ).toThrow('declares frontendView without a frontend bundle');
+  });
+
   it('rejects provider methods that were not declared as capabilities', () => {
     const registry = new PluginRegistry();
 
@@ -184,7 +366,7 @@ describe('PluginRegistry', () => {
             id: 'test.metrics',
             name: 'Metrics',
             version: '1.0.0',
-            dockscopeApiVersion: '1',
+            ...TEST_API_VERSIONS,
             capabilities: ['source.graph', 'ui.settings'],
             permissions: [],
           },
@@ -217,6 +399,28 @@ describe('PluginRegistry', () => {
     ]);
   });
 
+  it('records plugin manifest warnings without exposing mutable state', () => {
+    const registry = new PluginRegistry();
+    registry.recordLoadWarning({
+      id: 'custom.plugin',
+      path: '/tmp/plugin.json',
+      code: 'host-api-version-defaulted',
+      message: 'hostApiVersion is omitted',
+    });
+
+    const warnings = registry.listPluginWarnings();
+    warnings[0].message = 'changed';
+
+    expect(registry.listPluginWarnings()).toEqual([
+      {
+        id: 'custom.plugin',
+        path: '/tmp/plugin.json',
+        code: 'host-api-version-defaulted',
+        message: 'hostApiVersion is omitted',
+      },
+    ]);
+  });
+
   it('marks failed plugins without aborting registry startup', async () => {
     const registry = new PluginRegistry();
     registry.register(
@@ -243,7 +447,7 @@ describe('PluginRegistry', () => {
           id: 'test.ui',
           name: 'UI Plugin',
           version: '1.0.0',
-          dockscopeApiVersion: '1',
+          ...TEST_API_VERSIONS,
           capabilities: ['source.graph', 'ui.toolbarAction'],
           permissions: [],
           ui: [
@@ -268,6 +472,82 @@ describe('PluginRegistry', () => {
     ]);
   });
 
+  it('runs contextual UI actions through their owning plugin command', async () => {
+    const runCommand = vi.fn().mockResolvedValue({ ok: true, message: 'restarted' });
+    const registry = new PluginRegistry();
+    registry.register(
+      plugin({
+        manifest: {
+          id: 'test.context-ui',
+          name: 'Context UI',
+          version: '1.0.0',
+          ...TEST_API_VERSIONS,
+          capabilities: ['source.graph', 'ui.command', 'ui.nodeAction'],
+          permissions: [],
+          commands: [{ id: 'restart', title: 'Restart' }],
+          ui: [
+            {
+              id: 'restart-node',
+              slot: 'nodeAction',
+              title: 'Restart node',
+              context: { runtimes: ['docker'] },
+              action: {
+                type: 'run_command',
+                commandId: 'restart',
+                input: { force: false },
+                passContext: true,
+              },
+            },
+          ],
+        },
+        runCommand,
+      }),
+    );
+
+    await expect(
+      registry.runPluginUiAction('test.context-ui', 'restart-node', {
+        context: {
+          node: {
+            id: 'local:123',
+            name: 'api',
+            sourceId: 'local',
+            entityId: '123',
+            runtime: 'docker',
+            status: 'running',
+          },
+        },
+        input: { force: true },
+      }),
+    ).resolves.toEqual({
+      type: 'command',
+      result: { ok: true, message: 'restarted', data: undefined },
+    });
+    expect(runCommand).toHaveBeenCalledWith('restart', {
+      input: { force: true },
+      context: {
+        node: {
+          id: 'local:123',
+          name: 'api',
+          sourceId: 'local',
+          entityId: '123',
+          runtime: 'docker',
+          status: 'running',
+          kind: undefined,
+          namespace: undefined,
+          project: undefined,
+          host: undefined,
+        },
+      },
+      ui: { extensionId: 'restart-node', slot: 'nodeAction' },
+    });
+
+    await expect(
+      registry.runPluginUiAction('test.context-ui', 'restart-node', {
+        context: { node: { id: 'pod:api', name: 'api', runtime: 'kubernetes' } },
+      }),
+    ).rejects.toThrow('does not match the current context');
+  });
+
   it('lists and runs plugin commands with event history', async () => {
     const runCommand = vi.fn().mockResolvedValue({ ok: true, message: 'synced' });
     const registry = new PluginRegistry();
@@ -278,7 +558,7 @@ describe('PluginRegistry', () => {
           id: 'test.command',
           name: 'Command Plugin',
           version: '1.0.0',
-          dockscopeApiVersion: '1',
+          ...TEST_API_VERSIONS,
           capabilities: ['source.graph', 'ui.command'],
           permissions: [],
           commands: [{ id: 'sync', title: 'Sync', description: 'Run sync' }],
@@ -325,7 +605,7 @@ describe('PluginRegistry', () => {
           id: 'test.reload',
           name: 'Reload Plugin',
           version: '1.0.0',
-          dockscopeApiVersion: '1',
+          ...TEST_API_VERSIONS,
           capabilities: ['source.graph'],
           permissions: [],
         },
@@ -339,7 +619,7 @@ describe('PluginRegistry', () => {
           id: 'test.reload',
           name: 'Reload Plugin',
           version: '2.0.0',
-          dockscopeApiVersion: '1',
+          ...TEST_API_VERSIONS,
           capabilities: ['source.graph'],
           permissions: [],
         },
@@ -363,7 +643,7 @@ describe('PluginRegistry', () => {
           id: 'test.compat',
           name: 'Compat Plugin',
           version: '1.0.0',
-          dockscopeApiVersion: '1',
+          ...TEST_API_VERSIONS,
           capabilities: ['source.graph'],
           permissions: [],
           compatibility: {
@@ -380,7 +660,7 @@ describe('PluginRegistry', () => {
           id: 'core.compat',
           name: 'Core Compat',
           version: '1.0.0',
-          dockscopeApiVersion: '1',
+          ...TEST_API_VERSIONS,
           builtin: true,
           capabilities: ['source.graph'],
           permissions: [],
@@ -411,7 +691,7 @@ describe('PluginRegistry', () => {
           id: 'test.migration',
           name: 'Migration Plugin',
           version: '1.0.0',
-          dockscopeApiVersion: '1',
+          ...TEST_API_VERSIONS,
           capabilities: ['source.graph', 'ui.command'],
           permissions: [],
           commands: [{ id: 'migrate', title: 'Migrate' }],
@@ -443,7 +723,7 @@ describe('PluginRegistry', () => {
           id: 'test.review',
           name: 'Review Plugin',
           version: '1.0.0',
-          dockscopeApiVersion: '1',
+          ...TEST_API_VERSIONS,
           capabilities: ['source.graph', 'ui.command'],
           permissions: ['process.exec'],
           commands: [{ id: 'run', title: 'Run' }],
@@ -466,6 +746,46 @@ describe('PluginRegistry', () => {
     ]);
   });
 
+  it('approves and revokes plugin review fingerprints', async () => {
+    const writer = {
+      save: vi.fn().mockResolvedValue(undefined),
+    };
+    const registry = new PluginRegistry(undefined, undefined, undefined, undefined, [], writer);
+
+    registry.register(
+      plugin({
+        manifest: {
+          id: 'test.approval',
+          name: 'Approval Plugin',
+          version: '1.0.0',
+          ...TEST_API_VERSIONS,
+          capabilities: ['source.graph'],
+          permissions: [],
+        },
+      }),
+    );
+
+    expect(registry.listPluginReviews('1.0.0')[0]).toMatchObject({
+      pluginId: 'test.approval',
+      approvalStatus: 'unapproved',
+    });
+
+    const approval = await registry.approvePlugin('test.approval');
+
+    expect(registry.listPluginReviews('1.0.0')[0]).toMatchObject({
+      approvalStatus: 'approved',
+      approvedFingerprint: approval.fingerprint,
+    });
+    expect(writer.save).toHaveBeenCalledWith([approval]);
+
+    await registry.revokePluginApproval('test.approval');
+
+    expect(registry.listPluginReviews('1.0.0')[0]).toMatchObject({
+      approvalStatus: 'unapproved',
+    });
+    expect(writer.save).toHaveBeenLastCalledWith([]);
+  });
+
   it('validates, saves, and applies plugin config updates', async () => {
     const configure = vi.fn();
     const writer: PluginConfigWriter = {
@@ -479,7 +799,7 @@ describe('PluginRegistry', () => {
           id: 'test.config',
           name: 'Config Plugin',
           version: '1.0.0',
-          dockscopeApiVersion: '1',
+          ...TEST_API_VERSIONS,
           capabilities: ['source.graph', 'ui.settings'],
           permissions: [],
           config: {
@@ -557,7 +877,7 @@ describe('PluginRegistry', () => {
           id: 'test.secret',
           name: 'Secret Plugin',
           version: '1.0.0',
-          dockscopeApiVersion: '1',
+          ...TEST_API_VERSIONS,
           capabilities: ['source.graph'],
           permissions: ['secrets.read'],
           secrets: [{ key: 'token', label: 'API token', required: true }],
@@ -631,7 +951,145 @@ describe('PluginRegistry', () => {
     });
   });
 
-  it('routes stream log operations to a matching provider', () => {
+  it('discovers and runs provider-owned entity actions with typed input', async () => {
+    const actionProvider: EntityActionProvider = {
+      canHandle: (ref) => ref.sourceId === 'source-a',
+      listActions: vi.fn().mockResolvedValue([
+        {
+          id: 'scale',
+          title: 'Scale',
+          capability: 'action.scale',
+          placement: 'primary',
+          input: {
+            fields: [{ key: 'replicas', label: 'Replicas', type: 'number', required: true }],
+          },
+        },
+      ]),
+      runAction: vi.fn().mockResolvedValue({ ok: true, message: 'scaled' }),
+    };
+    const registry = new PluginRegistry();
+    registry.register(
+      pluginWithCapabilities(['source.graph', 'action.scale'], {
+        getActionProviders: () => [actionProvider],
+      }),
+    );
+    const ref = { entityId: 'entity-a', sourceId: 'source-a' };
+
+    await expect(registry.listEntityActions(ref)).resolves.toEqual([
+      expect.objectContaining({
+        pluginId: 'test.plugin',
+        id: 'scale',
+        capability: 'action.scale',
+        placement: 'primary',
+      }),
+    ]);
+    await expect(registry.listEntityOperations(ref)).resolves.toContainEqual({
+      id: 'actions',
+      pluginId: 'test.plugin',
+      capability: 'action.scale',
+    });
+    await expect(
+      registry.runEntityAction(ref, 'test.plugin', 'scale', { replicas: 3 }),
+    ).resolves.toEqual({ ok: true, message: 'scaled', data: undefined });
+    expect(actionProvider.runAction).toHaveBeenCalledWith(ref, 'scale', { replicas: 3 });
+    await expect(
+      registry.runEntityAction(ref, 'test.plugin', 'scale', { replicas: 'three' }),
+    ).rejects.toThrow('must be a number');
+  });
+
+  it('aggregates plugin-owned metric analysis and system inventory', async () => {
+    const analysisProvider: MetricAnalysisProvider = {
+      canHandle: (ref) => ref.sourceId === 'source-a',
+      analyze: vi.fn().mockResolvedValue({ average: 25, threshold: 80, severity: 'warning' }),
+    };
+    const systemProvider: PluginSystemProvider = {
+      listSystems: vi.fn().mockResolvedValue([
+        {
+          id: 'source-a',
+          label: 'Source A',
+          runtime: 'demo',
+          status: 'connected',
+          version: '1.0.0',
+        },
+      ]),
+    };
+    const registry = new PluginRegistry();
+    registry.register(
+      pluginWithCapabilities(['source.graph', 'source.system', 'analysis.anomalies'], {
+        getMetricAnalysisProviders: () => [analysisProvider],
+        getSystemProviders: () => [systemProvider],
+      }),
+    );
+
+    await expect(
+      registry.analyzeMetric({
+        ref: { entityId: 'entity-a', sourceId: 'source-a' },
+        metric: 'cpu',
+        value: 95,
+        history: [20, 25, 30],
+      }),
+    ).resolves.toEqual([
+      {
+        pluginId: 'test.plugin',
+        metric: 'cpu',
+        value: 95,
+        average: 25,
+        threshold: 80,
+        severity: 'warning',
+        message: undefined,
+      },
+    ]);
+    await expect(registry.listSystems()).resolves.toEqual([
+      expect.objectContaining({ id: 'source-a', pluginId: 'test.plugin', status: 'connected' }),
+    ]);
+  });
+
+  it('routes connection lifecycle to an exact plugin provider', async () => {
+    const connectionProvider: PluginConnectionProvider = {
+      describe: () => ({
+        id: 'clusters',
+        label: 'Clusters',
+        input: {
+          fields: [{ key: 'endpoint', label: 'Endpoint', type: 'string', required: true }],
+        },
+      }),
+      listConnections: vi
+        .fn()
+        .mockResolvedValue([
+          { id: 'cluster-a', label: 'Cluster A', status: 'connected', removable: true },
+        ]),
+      addConnection: vi.fn().mockResolvedValue(undefined),
+      removeConnection: vi.fn().mockResolvedValue(undefined),
+      refreshConnections: vi.fn().mockResolvedValue(undefined),
+    };
+    const registry = new PluginRegistry();
+    registry.register(
+      pluginWithCapabilities(['source.graph', 'source.connections'], {
+        getConnectionProviders: () => [connectionProvider],
+      }),
+    );
+
+    expect(registry.listConnectionProviders()).toEqual([
+      expect.objectContaining({ pluginId: 'test.plugin', id: 'clusters' }),
+    ]);
+    await expect(registry.listConnections()).resolves.toEqual([
+      expect.objectContaining({
+        id: 'cluster-a',
+        pluginId: 'test.plugin',
+        providerId: 'clusters',
+      }),
+    ]);
+    await registry.addConnection('test.plugin', 'clusters', { endpoint: 'https://cluster-a' });
+    expect(connectionProvider.addConnection).toHaveBeenCalledWith({
+      endpoint: 'https://cluster-a',
+    });
+    await registry.removeConnection('test.plugin', 'clusters', 'cluster-a');
+    expect(connectionProvider.removeConnection).toHaveBeenCalledWith('cluster-a');
+    await registry.refreshConnections();
+    expect(connectionProvider.refreshConnections).toHaveBeenCalledOnce();
+  });
+
+  it('routes stream log operations to a matching provider', async () => {
     const stop = vi.fn();
     const logStreamProvider: EntityLogStreamProvider = {
       canHandle: (ref) => ref.sourceId === 'source-a',
@@ -647,9 +1105,9 @@ describe('PluginRegistry', () => {
       }),
     );
 
-    expect(
+    await expect(
       registry.streamLogs({ entityId: 'entity-a', sourceId: 'source-a' }, onData, onError),
-    ).toBe(stop);
+    ).resolves.toBe(stop);
     expect(logStreamProvider.streamLogs).toHaveBeenCalledWith(
       { entityId: 'entity-a', sourceId: 'source-a' },
       onData,
@@ -706,7 +1164,13 @@ describe('PluginRegistry', () => {
     );
 
     await expect(registry.listProjects()).resolves.toEqual([
-      { name: 'demo', running: 1, stopped: 0 },
+      {
+        name: 'demo',
+        running: 1,
+        stopped: 0,
+        pluginId: 'test.plugin',
+        providerId: '0',
+      },
     ]);
     await expect(registry.runProjectAction('demo', 'restart')).resolves.toBe('restart completed');
     expect(projectProvider.runProjectAction).toHaveBeenCalledWith('demo', 'restart');

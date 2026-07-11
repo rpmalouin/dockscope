@@ -2,7 +2,7 @@
 
 import { Command } from 'commander';
 import { existsSync } from 'fs';
-import { mkdir, readFile, writeFile } from 'fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'fs/promises';
 import { generateKeyPairSync } from 'crypto';
 import { createConnection } from 'net';
 import path from 'path';
@@ -22,6 +22,12 @@ import {
   updateInstalledPlugin,
 } from './plugins/install.js';
 import { createPluginPackageFromPath, verifyPluginPackage } from './plugins/package.js';
+import {
+  installPluginFromCatalog,
+  loadPluginCatalog,
+  parsePluginCatalogTrustStore,
+  signPluginCatalogFile,
+} from './plugins/catalog.js';
 
 function isPortInUse(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -77,40 +83,147 @@ async function writePluginScaffold(options: {
   dir: string;
   id: string;
   name: string;
+  template?: string;
 }): Promise<void> {
   const pluginDir = path.resolve(options.dir);
   await mkdir(pluginDir, { recursive: true });
+  const template = options.template === 'graph' ? 'graph' : 'command';
   const manifest = {
+    $schema:
+      'https://raw.githubusercontent.com/ManuelR-T/dockscope/main/schemas/plugin-manifest.schema.json',
     id: options.id,
     name: options.name,
     version: '0.1.0',
+    manifestVersion: '1',
     dockscopeApiVersion: '1',
+    hostApiVersion: '1',
     entry: './plugin.mjs',
-    capabilities: ['ui.command', 'source.events'],
+    execution: {
+      isolation: 'process',
+      operationTimeoutMs: 30_000,
+      maxStderrBytes: 64_000,
+      memoryLimitMb: 128,
+    },
+    capabilities:
+      template === 'graph'
+        ? ['source.graph', 'ui.command', 'source.events']
+        : ['ui.command', 'source.events'],
     permissions: [],
     commands: [
       {
-        id: 'hello',
-        title: 'Say hello',
-        description: 'Emit a sample plugin event',
+        id: template === 'graph' ? 'refresh' : 'hello',
+        title: template === 'graph' ? 'Refresh graph sample' : 'Say hello',
+        description: template === 'graph' ? 'Emit a refresh event' : 'Emit a sample plugin event',
+        input:
+          template === 'command'
+            ? {
+                fields: [
+                  {
+                    key: 'name',
+                    label: 'Name',
+                    type: 'string',
+                    default: 'DockScope',
+                  },
+                ],
+              }
+            : undefined,
       },
     ],
   };
   await writeFile(path.join(pluginDir, 'plugin.json'), JSON.stringify(manifest, null, 2), 'utf-8');
   await writeFile(
     path.join(pluginDir, 'plugin.mjs'),
-    `export default function createPlugin({ manifest, host }) {
+    template === 'graph'
+      ? `// @ts-check
+
+/** @type {import('dockscope/plugin-sdk/v1').DataSourceDescriptor} */
+const source = {
+  id: 'sample',
+  label: 'Sample Graph',
+  kind: 'plugin',
+  pluginId: '',
+  capabilities: ['source.graph'],
+  status: 'connected',
+};
+
+/** @type {import('dockscope/plugin-sdk/v1').PluginFactory} */
+const createPlugin = ({ manifest, host }) => {
   return {
     manifest,
+    getGraphSources() {
+      return [
+        {
+          describe() {
+            return { ...source, pluginId: manifest.id };
+          },
+          async collectGraph() {
+            return {
+              source: { ...source, pluginId: manifest.id },
+              collectedAt: Date.now(),
+              graph: {
+                nodes: [
+                  {
+                    id: 'sample-node',
+                    name: 'sample-node',
+                    fullName: 'sample/sample-node',
+                    project: 'sample',
+                    host: 'sample',
+                    containerId: 'sample-node',
+                    image: 'Sample',
+                    status: 'running',
+                    health: 'healthy',
+                    ports: [],
+                    networks: ['sample'],
+                    volumeCount: 0,
+                    cpu: 0,
+                    memory: 0,
+                    memoryLimit: 0,
+                    networkRx: 0,
+                    networkTx: 0,
+                    networkRxRate: 0,
+                    networkTxRate: 0,
+                  },
+                ],
+                links: [],
+              },
+            };
+          },
+        },
+      ];
+    },
     async runCommand(commandId) {
+      if (commandId !== 'refresh') {
+        return { ok: false, message: \`Unknown command: \${commandId}\` };
+      }
+      await host.publishEvent('sample.refresh', { time: Date.now() });
+      return { ok: true, message: 'Refresh event emitted' };
+    },
+  };
+};
+
+export default createPlugin;
+`
+      : `// @ts-check
+
+/** @type {import('dockscope/plugin-sdk/v1').PluginFactory} */
+const createPlugin = ({ manifest, host }) => {
+  return {
+    manifest,
+    async runCommand(commandId, input) {
       if (commandId !== 'hello') {
         return { ok: false, message: \`Unknown command: \${commandId}\` };
       }
-      await host.publishEvent('hello.ran', { time: Date.now() });
-      return { ok: true, message: 'Hello from your DockScope plugin' };
+      const values = typeof input === 'object' && input !== null ? input : {};
+      const name = 'name' in values && typeof values.name === 'string' && values.name.trim()
+        ? values.name
+        : 'DockScope';
+      await host.publishEvent('hello.ran', { name, time: Date.now() });
+      return { ok: true, message: \`Hello, \${name}\` };
     },
   };
-}
+};
+
+export default createPlugin;
 `,
     'utf-8',
   );
@@ -137,6 +250,25 @@ async function writePluginScaffold(options: {
     'utf-8',
   );
   await writeFile(
+    path.join(pluginDir, 'jsconfig.json'),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          allowJs: true,
+          checkJs: true,
+          module: 'NodeNext',
+          moduleResolution: 'NodeNext',
+          noEmit: true,
+          strict: true,
+        },
+        include: ['plugin.mjs'],
+      },
+      null,
+      2,
+    ),
+    'utf-8',
+  );
+  await writeFile(
     path.join(pluginDir, 'README.md'),
     `# ${options.name}
 
@@ -147,7 +279,7 @@ DockScope plugin id: \`${options.id}\`
 \`\`\`bash
 dockscope plugin:validate --plugins . --plugin-permissions all
 dockscope plugin:test --plugins . --plugin-permissions all
-dockscope up --plugins . --plugin-permissions all
+dockscope plugin:dev --plugins . --plugin-permissions all
 \`\`\`
 
 ## Packaging
@@ -172,6 +304,11 @@ async function validatePluginPaths(opts: {
   for (const manifest of result.manifests) {
     console.log(`  ok ${manifest.id} v${manifest.version} (api ${manifest.dockscopeApiVersion})`);
   }
+  for (const warning of result.warnings) {
+    console.warn(
+      `  warning ${warning.id ?? warning.path ?? 'unknown'} [${warning.code}]: ${warning.message}`,
+    );
+  }
   for (const error of result.errors) {
     console.error(
       `  error ${error.id ?? error.path ?? 'unknown'} [${error.phase}]: ${error.message}`,
@@ -186,6 +323,10 @@ async function validatePluginPaths(opts: {
 
 async function readOptionalTextFile(filePath: string | undefined): Promise<string | undefined> {
   return filePath ? readFile(path.resolve(filePath), 'utf-8') : undefined;
+}
+
+async function readRequiredTextFile(filePath: string): Promise<string> {
+  return readFile(path.resolve(filePath), 'utf-8');
 }
 
 const program = new Command();
@@ -219,6 +360,19 @@ program
   .option('--plugin-secrets <file>', 'Plugin secrets JSON file')
   .option('--plugin-secret-key <key>', 'Encrypt plugin secrets with this local key')
   .option('--plugin-events <file>', 'Plugin event history JSON file')
+  .option('--plugin-approvals <file>', 'Plugin approval JSON file')
+  .option('--plugin-catalog <source>', 'Plugin catalog file or URL')
+  .option(
+    '--plugin-catalog-public-key <file>',
+    'Verify signed plugin catalogs with this public key',
+  )
+  .option(
+    '--plugin-catalog-trust <file>',
+    'Catalog signer trust store with rotation and revocation policy',
+  )
+  .option('--no-official-plugin-catalog', 'Disable the default DockScope plugin catalog')
+  .option('--plugin-registry <dir>', 'Local plugin registry directory')
+  .option('--allow-unsigned-plugins', 'Allow marketplace installs from unsigned catalog entries')
   .option('--no-external-plugins', 'Disable external plugin loading')
   .action(async (opts) => {
     const requestedPort = parseInt(opts.port, 10);
@@ -247,6 +401,13 @@ program
       pluginSecrets: opts.pluginSecrets,
       pluginSecretKey: opts.pluginSecretKey,
       pluginEvents: opts.pluginEvents,
+      pluginApprovals: opts.pluginApprovals,
+      pluginCatalog: opts.pluginCatalog,
+      pluginCatalogPublicKey: await readOptionalTextFile(opts.pluginCatalogPublicKey),
+      pluginCatalogTrust: await readOptionalTextFile(opts.pluginCatalogTrust),
+      disableOfficialPluginCatalog: opts.officialPluginCatalog === false,
+      pluginRegistry: opts.pluginRegistry,
+      allowUnsignedPlugins: opts.allowUnsignedPlugins === true,
       disableExternalPlugins: opts.externalPlugins === false,
     });
 
@@ -297,8 +458,14 @@ program
   .requiredOption('--dir <path>', 'Plugin directory to create')
   .requiredOption('--id <id>', 'Plugin id')
   .requiredOption('--name <name>', 'Plugin display name')
+  .option('--template <name>', 'Plugin scaffold template: command or graph', 'command')
   .action(async (opts) => {
-    await writePluginScaffold({ dir: opts.dir, id: opts.id, name: opts.name });
+    await writePluginScaffold({
+      dir: opts.dir,
+      id: opts.id,
+      name: opts.name,
+      template: opts.template,
+    });
     console.log(`  created ${opts.id} in ${path.resolve(opts.dir)}`);
   });
 
@@ -313,11 +480,11 @@ program
     const { privateKey, publicKey } = generateKeyPairSync('ed25519');
     const privatePath = path.join(outDir, `${opts.name}.private.pem`);
     const publicPath = path.join(outDir, `${opts.name}.public.pem`);
-    await writeFile(
-      privatePath,
-      privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
-      'utf-8',
-    );
+    await writeFile(privatePath, privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(), {
+      encoding: 'utf-8',
+      mode: 0o600,
+    });
+    await chmod(privatePath, 0o600);
     await writeFile(
       publicPath,
       publicKey.export({ type: 'spki', format: 'pem' }).toString(),
@@ -350,10 +517,10 @@ program
     }
     if (result.plugins.length === 0 && result.errors.length === 0) {
       console.error('  No plugin manifests found');
-      process.exit(1);
     }
-    if (result.errors.length > 0) {
-      process.exit(1);
+    await Promise.all(result.plugins.map((plugin) => plugin.stop?.()));
+    if (result.errors.length > 0 || result.plugins.length === 0) {
+      process.exitCode = 1;
     }
   });
 
@@ -376,6 +543,108 @@ program
     setInterval(() => {
       void run();
     }, interval);
+  });
+
+program
+  .command('plugin:dev')
+  .description('Run DockScope with local plugin development defaults')
+  .requiredOption('--plugins <paths>', 'Plugin path list')
+  .option('-p, --port <port>', 'Server port', '4681')
+  .option(
+    '--plugin-permissions <permissions>',
+    'Allowed plugin permissions: all or comma-separated',
+    'all',
+  )
+  .option('--plugin-config <file>', 'Plugin configuration JSON file')
+  .option('--plugin-state <file>', 'Plugin enabled/disabled state JSON file')
+  .option('--plugin-secrets <file>', 'Plugin secrets JSON file')
+  .option('--plugin-secret-key <key>', 'Encrypt plugin secrets with this local key')
+  .option('--plugin-events <file>', 'Plugin event history JSON file')
+  .option('--plugin-approvals <file>', 'Plugin approval JSON file')
+  .option('--plugin-catalog <source>', 'Plugin catalog file or URL')
+  .option(
+    '--plugin-catalog-public-key <file>',
+    'Verify signed plugin catalogs with this public key',
+  )
+  .option(
+    '--plugin-catalog-trust <file>',
+    'Catalog signer trust store with rotation and revocation policy',
+  )
+  .option('--no-official-plugin-catalog', 'Disable the default DockScope plugin catalog')
+  .option('--plugin-registry <dir>', 'Local plugin registry directory')
+  .option('--allow-unsigned-plugins', 'Allow marketplace installs from unsigned catalog entries')
+  .option('--no-open', "Don't open browser automatically")
+  .action(async (opts) => {
+    if (!(await validatePluginPaths(opts))) {
+      process.exit(1);
+    }
+    const requestedPort = parseInt(opts.port, 10);
+    const port = await findAvailablePort(requestedPort);
+    await startServer({
+      port,
+      open: opts.open !== false,
+      pluginPaths: opts.plugins,
+      pluginPermissions: opts.pluginPermissions,
+      pluginConfig: opts.pluginConfig,
+      pluginState: opts.pluginState,
+      pluginSecrets: opts.pluginSecrets,
+      pluginSecretKey: opts.pluginSecretKey,
+      pluginEvents: opts.pluginEvents,
+      pluginApprovals: opts.pluginApprovals,
+      pluginCatalog: opts.pluginCatalog,
+      pluginCatalogPublicKey: await readOptionalTextFile(opts.pluginCatalogPublicKey),
+      pluginCatalogTrust: await readOptionalTextFile(opts.pluginCatalogTrust),
+      disableOfficialPluginCatalog: opts.officialPluginCatalog === false,
+      pluginRegistry: opts.pluginRegistry,
+      allowUnsignedPlugins: opts.allowUnsignedPlugins === true,
+    });
+    console.log(`  Plugin dev server: http://localhost:${port}`);
+    console.log('  Press Ctrl+C to stop\n');
+    if (opts.open !== false) {
+      const open = (await import('open')).default;
+      await open(`http://localhost:${port}`);
+    }
+  });
+
+program
+  .command('plugin:doctor')
+  .description('Check plugin paths and optional catalog configuration')
+  .option('--plugins <paths>', 'Plugin path list')
+  .option(
+    '--plugin-permissions <permissions>',
+    'Allowed plugin permissions: all or comma-separated',
+  )
+  .option('--catalog <source>', 'Catalog JSON file or URL')
+  .option('--catalog-public-key <file>', 'Verify catalog signature with this public key')
+  .option('--catalog-trust <file>', 'Catalog signer trust store JSON file')
+  .action(async (opts) => {
+    let ok = true;
+    if (opts.plugins) {
+      ok = (await validatePluginPaths(opts)) && ok;
+    }
+    if (opts.catalog) {
+      try {
+        const catalog = await loadPluginCatalog(opts.catalog, {
+          publicKey: await readOptionalTextFile(opts.catalogPublicKey),
+          trustStore: opts.catalogTrust
+            ? parsePluginCatalogTrustStore(await readRequiredTextFile(opts.catalogTrust))
+            : undefined,
+        });
+        console.log(
+          `  catalog ok ${catalog.name} (${catalog.entries.length} entries${catalog.signatureVerified ? ', signed' : ''})`,
+        );
+      } catch (error) {
+        ok = false;
+        console.error(`  catalog error ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (!opts.plugins && !opts.catalog) {
+      console.error('  Nothing to check; pass --plugins and/or --catalog');
+      ok = false;
+    }
+    if (!ok) {
+      process.exit(1);
+    }
   });
 
 program
@@ -433,6 +702,116 @@ program
       registryDir: opts.registryDir,
       signingKey: opts.signingKey,
       publicKey: await readOptionalTextFile(opts.publicKey),
+    });
+    console.log(`  installed ${installed.id} v${installed.version}`);
+    if (installed.packageSha256) {
+      console.log(`  package ${installed.packageSha256}`);
+    }
+    console.log(`  path ${installed.path}`);
+  });
+
+program
+  .command('plugin:catalog')
+  .description('List plugins from a DockScope plugin catalog')
+  .requiredOption('--catalog <source>', 'Catalog JSON file or URL')
+  .option('--public-key <file>', 'Verify catalog signature with this Ed25519 public key PEM file')
+  .option('--trust <file>', 'Catalog signer trust store JSON file')
+  .action(async (opts) => {
+    const catalog = await loadPluginCatalog(opts.catalog, {
+      publicKey: await readOptionalTextFile(opts.publicKey),
+      trustStore: opts.trust
+        ? parsePluginCatalogTrustStore(await readRequiredTextFile(opts.trust))
+        : undefined,
+    });
+    console.log(`  ${catalog.name}${catalog.signatureVerified ? ' (signature verified)' : ''}`);
+    for (const entry of catalog.entries) {
+      console.log(`  ${entry.id} v${entry.version} ${entry.status}`);
+      if (entry.description) {
+        console.log(`    ${entry.description}`);
+      }
+      if (entry.releaseNotes) {
+        console.log(`    release ${entry.releaseNotes}`);
+      }
+      console.log(`    package ${entry.resolvedPackageUrl}`);
+    }
+  });
+
+program
+  .command('plugin:catalog:sign')
+  .description('Sign a DockScope plugin catalog in place')
+  .requiredOption('--catalog <file>', 'Catalog JSON file to sign')
+  .requiredOption('--private-key <file>', 'Ed25519 private key PEM file')
+  .option('--key-id <id>', 'Optional catalog signing key id')
+  .action(async (opts) => {
+    const signed = await signPluginCatalogFile({
+      catalogPath: opts.catalog,
+      privateKey: await readRequiredTextFile(opts.privateKey),
+      keyId: opts.keyId,
+    });
+    console.log(`  signed ${signed.name}`);
+    console.log(
+      `  signature ${signed.signature?.algorithm}${signed.signature?.keyId ? `:${signed.signature.keyId}` : ''}`,
+    );
+  });
+
+program
+  .command('plugin:catalog:entry')
+  .description('Generate a catalog entry JSON object from a plugin package')
+  .requiredOption('--package <file>', 'DockScope plugin package file')
+  .requiredOption('--public-key <file>', 'Ed25519 package public key PEM file')
+  .option('--key-id <id>', 'Package signing key id')
+  .option('--category <category>', 'Catalog category')
+  .option('--license <license>', 'Plugin license')
+  .option('--release-notes <notes>', 'Release notes')
+  .action(async (opts) => {
+    const publicKey = await readRequiredTextFile(opts.publicKey);
+    const verified = await verifyPluginPackage(opts.package, {
+      publicKey,
+    });
+    const entry = {
+      id: verified.bundle.manifest.id,
+      name: verified.bundle.manifest.name,
+      version: verified.bundle.manifest.version,
+      description: verified.bundle.manifest.description,
+      license: opts.license,
+      category: opts.category,
+      status: 'active',
+      tags: [],
+      publishedAt: new Date().toISOString(),
+      releaseNotes: opts.releaseNotes,
+      compatibility: verified.bundle.manifest.compatibility,
+      capabilities: verified.bundle.manifest.capabilities,
+      permissions: verified.bundle.manifest.permissions,
+      packageUrl: path.basename(path.resolve(opts.package)),
+      packageSha256: verified.bundle.sha256,
+      signature: {
+        algorithm: 'ed25519',
+        publicKey,
+        keyId: opts.keyId ?? verified.bundle.signature?.keyId,
+      },
+    };
+    console.log(JSON.stringify(entry, null, 2));
+  });
+
+program
+  .command('plugin:catalog:install')
+  .description('Install a plugin package from a DockScope plugin catalog')
+  .argument('<pluginId>', 'Plugin id')
+  .requiredOption('--catalog <source>', 'Catalog JSON file or URL')
+  .option('--registry-dir <path>', 'Local plugin registry directory')
+  .option('--catalog-public-key <file>', 'Verify catalog signature with this public key')
+  .option('--catalog-trust <file>', 'Catalog signer trust store JSON file')
+  .option('--allow-unsigned', 'Allow installing unsigned catalog entries')
+  .action(async (pluginId: string, opts) => {
+    const installed = await installPluginFromCatalog({
+      catalogSource: opts.catalog,
+      pluginId,
+      registryDir: opts.registryDir,
+      catalogPublicKey: await readOptionalTextFile(opts.catalogPublicKey),
+      catalogTrustStore: opts.catalogTrust
+        ? parsePluginCatalogTrustStore(await readRequiredTextFile(opts.catalogTrust))
+        : undefined,
+      allowUnsigned: opts.allowUnsigned === true,
     });
     console.log(`  installed ${installed.id} v${installed.version}`);
     if (installed.packageSha256) {

@@ -1,22 +1,39 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { getJson, requestJson } from '../lib/api';
+  import { apiErrorMessage, deleteJson, getJson, requestJson } from '../lib/api';
   import { addToast } from '../stores/toast.svelte';
   import type {
     PluginConfigSnapshot,
     PluginLoadError,
+    PluginLoadWarning,
     PluginReviewReport,
     PluginRuntimeInfo,
   } from '../../core/plugins';
+  import type { PluginRuntimeHealth } from '../../core/plugin-runtime';
   import type { PluginConfigField, PluginConfigValue } from '../../core/plugin-config';
   import type { PluginSecretSnapshot } from '../../core/plugin-secrets';
   import type { PluginUiExtension } from '../../core/plugin-ui';
   import type { PluginCommand, PluginCommandResult } from '../../core/plugin-commands';
   import type { PluginEvent } from '../../core/plugin-events';
   import type { PluginCompatibilityReport } from '../../core/plugin-compatibility';
+  import PluginExtension from './PluginExtension.svelte';
+  import { clearPluginFrontendCache, invokePluginUiAction } from '../lib/pluginUi';
+  import type {
+    PluginMarketplaceEntry,
+    PluginMarketplaceSnapshot,
+  } from '../../plugins/marketplace';
+  import Icon from './Icon.svelte';
 
   interface Props {
     onClose: () => void;
+  }
+
+  type MarketplaceAction = 'install' | 'update' | 'uninstall';
+  type MarketplaceFilter = 'all' | 'available' | 'installed' | 'updates' | 'local' | 'deprecated';
+
+  interface MarketplaceReview {
+    entry: PluginMarketplaceEntry;
+    action: MarketplaceAction;
   }
 
   let { onClose }: Props = $props();
@@ -27,65 +44,113 @@
     | 'commands'
     | 'events'
     | 'review'
+    | 'marketplace'
     | 'compatibility'
     | 'config'
     | 'secrets'
   >('plugins');
   let loading = $state(true);
   let plugins = $state<PluginRuntimeInfo[]>([]);
+  let runtimeHealth = $state<PluginRuntimeHealth[]>([]);
   let errors = $state<PluginLoadError[]>([]);
+  let warnings = $state<PluginLoadWarning[]>([]);
   let extensions = $state<PluginUiExtension[]>([]);
   let commands = $state<PluginCommand[]>([]);
   let events = $state<PluginEvent[]>([]);
   let reviews = $state<PluginReviewReport[]>([]);
+  let marketplace = $state<PluginMarketplaceSnapshot>({
+    configured: false,
+    registryDir: '',
+    approvals: [],
+    entries: [],
+  });
   let compatibility = $state<PluginCompatibilityReport[]>([]);
   let configs = $state<PluginConfigSnapshot[]>([]);
   let secrets = $state<PluginSecretSnapshot[]>([]);
   let drafts = $state<Record<string, Record<string, PluginConfigValue>>>({});
   let secretDrafts = $state<Record<string, Record<string, string>>>({});
+  let commandDrafts = $state<Record<string, Record<string, PluginConfigValue>>>({});
   let saving = $state<string | null>(null);
   let toggling = $state<string | null>(null);
   let reloading = $state<string | null>(null);
   let runningCommand = $state<string | null>(null);
+  let marketplaceAction = $state<string | null>(null);
+  let marketplaceReview = $state<MarketplaceReview | null>(null);
+  let marketplaceQuery = $state('');
+  let marketplaceFilter = $state<MarketplaceFilter>('all');
 
   const configurable = $derived(
     configs.filter((config) => (config.schema?.fields.length ?? 0) > 0),
   );
+  const marketplaceEntries = $derived(
+    marketplace.entries.filter((entry) => marketplaceEntryMatches(entry)),
+  );
+  const settingsExtensions = $derived(
+    extensions.filter((extension) => extension.slot === 'settings'),
+  );
 
   onMount(() => {
     void loadPluginState();
+    const runtimeRefresh = window.setInterval(() => {
+      if (tab === 'plugins' && !loading) {
+        void refreshRuntimeHealth();
+      }
+    }, 5000);
+    return () => window.clearInterval(runtimeRefresh);
   });
+
+  async function refreshRuntimeHealth() {
+    try {
+      const [pluginData, healthData] = await Promise.all([
+        getJson<PluginRuntimeInfo[]>('/api/plugins'),
+        getJson<PluginRuntimeHealth[]>('/api/plugins/health'),
+      ]);
+      plugins = pluginData;
+      runtimeHealth = healthData;
+    } catch {
+      // The full refresh path surfaces connectivity failures to the user.
+    }
+  }
 
   async function loadPluginState() {
     loading = true;
     try {
       const [
         pluginData,
+        healthData,
         errorData,
+        warningData,
         extensionData,
         commandData,
         eventData,
         reviewData,
+        marketplaceData,
         compatibilityData,
         configData,
         secretData,
       ] = await Promise.all([
         getJson<PluginRuntimeInfo[]>('/api/plugins'),
+        getJson<PluginRuntimeHealth[]>('/api/plugins/health'),
         getJson<PluginLoadError[]>('/api/plugins/errors'),
+        getJson<PluginLoadWarning[]>('/api/plugins/warnings'),
         getJson<PluginUiExtension[]>('/api/plugins/ui'),
         getJson<PluginCommand[]>('/api/plugins/commands'),
         getJson<PluginEvent[]>('/api/plugins/events'),
         getJson<PluginReviewReport[]>('/api/plugins/review'),
+        getJson<PluginMarketplaceSnapshot>('/api/plugins/marketplace'),
         getJson<PluginCompatibilityReport[]>('/api/plugins/compatibility'),
         getJson<PluginConfigSnapshot[]>('/api/plugins/config'),
         getJson<PluginSecretSnapshot[]>('/api/plugins/secrets'),
       ]);
       plugins = pluginData;
+      runtimeHealth = healthData;
       errors = errorData;
+      warnings = warningData;
       extensions = extensionData;
       commands = commandData;
       events = eventData;
       reviews = reviewData;
+      marketplace = marketplaceData;
       compatibility = compatibilityData;
       configs = configData;
       secrets = secretData;
@@ -93,6 +158,15 @@
         configData.map((config) => [config.pluginId, { ...config.values }]),
       );
       secretDrafts = Object.fromEntries(secretData.map((secret) => [secret.pluginId, {}]));
+      commandDrafts = Object.fromEntries(
+        commandData.map((command) => [
+          commandKey(command),
+          {
+            ...commandInputDefaults(command),
+            ...(commandDrafts[commandKey(command)] ?? {}),
+          },
+        ]),
+      );
     } catch {
       addToast('Failed to load plugins', 'error');
     } finally {
@@ -139,6 +213,52 @@
     return '';
   }
 
+  function defaultFieldValue(field: PluginConfigField): PluginConfigValue {
+    if (field.default !== undefined) {
+      return field.default;
+    }
+    if (field.type === 'boolean') {
+      return false;
+    }
+    if (field.type === 'number') {
+      return 0;
+    }
+    return '';
+  }
+
+  function commandKey(command: PluginCommand): string {
+    return `${command.pluginId}:${command.id}`;
+  }
+
+  function commandInputDefaults(command: PluginCommand): Record<string, PluginConfigValue> {
+    return Object.fromEntries(
+      (command.input?.fields ?? []).map((field) => [field.key, defaultFieldValue(field)]),
+    );
+  }
+
+  function commandFieldValue(command: PluginCommand, field: PluginConfigField): PluginConfigValue {
+    return commandDrafts[commandKey(command)]?.[field.key] ?? defaultFieldValue(field);
+  }
+
+  function setCommandInputValue(command: PluginCommand, key: string, value: PluginConfigValue) {
+    const id = commandKey(command);
+    commandDrafts = {
+      ...commandDrafts,
+      [id]: {
+        ...(commandDrafts[id] ?? {}),
+        [key]: value,
+      },
+    };
+  }
+
+  function commandInputPayload(command: PluginCommand): Record<string, PluginConfigValue> {
+    const payload: Record<string, PluginConfigValue> = {};
+    for (const field of command.input?.fields ?? []) {
+      payload[field.key] = commandFieldValue(command, field);
+    }
+    return payload;
+  }
+
   async function saveConfig(pluginId: string) {
     const snapshot = configs.find((config) => config.pluginId === pluginId);
     if (!snapshot?.schema || saving) {
@@ -180,6 +300,8 @@
         { method: 'POST' },
       );
       plugins = plugins.map((item) => (item.manifest.id === updated.manifest.id ? updated : item));
+      clearPluginFrontendCache(plugin.manifest.id);
+      await loadPluginState();
       addToast(`${plugin.manifest.name}: ${action}d`, 'success');
     } catch {
       addToast(`${plugin.manifest.name}: ${action} failed`, 'error');
@@ -199,6 +321,7 @@
         { method: 'POST' },
       );
       plugins = plugins.map((item) => (item.manifest.id === updated.manifest.id ? updated : item));
+      clearPluginFrontendCache(plugin.manifest.id);
       await loadPluginState();
       addToast(`${plugin.manifest.name}: reloaded`, 'success');
     } catch {
@@ -208,16 +331,50 @@
     }
   }
 
+  async function runExtensionAction(extension: PluginUiExtension, input?: unknown) {
+    try {
+      const result = await invokePluginUiAction(extension, {}, input);
+      if (result.type === 'open_url') {
+        window.open(result.url, '_blank', 'noopener,noreferrer');
+      } else {
+        addToast(result.result.message || extension.title, result.result.ok ? 'success' : 'error');
+      }
+    } catch (error) {
+      addToast(apiErrorMessage(error) || `${extension.title}: action failed`, 'error');
+    }
+  }
+
+  function extensionContentPreview(extension: PluginUiExtension): string {
+    const content = extension.content;
+    if (!content) {
+      return '';
+    }
+    if (content.type === 'text' || content.type === 'markdown') {
+      return content.body;
+    }
+    if (content.type === 'metrics' || content.type === 'keyValue') {
+      return content.items.map((item) => `${item.label}: ${item.value}`).join('\n');
+    }
+    return '';
+  }
+
   async function runCommand(command: PluginCommand) {
-    const key = `${command.pluginId}:${command.id}`;
+    const key = commandKey(command);
     if (runningCommand) {
       return;
     }
     runningCommand = key;
     try {
+      const hasInput = (command.input?.fields.length ?? 0) > 0;
       const result = await requestJson<PluginCommandResult>(
         `/api/plugins/${encodeURIComponent(command.pluginId)}/commands/${encodeURIComponent(command.id)}`,
-        { method: 'POST' },
+        hasInput
+          ? {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ input: commandInputPayload(command) }),
+            }
+          : { method: 'POST' },
       );
       await loadPluginState();
       addToast(
@@ -256,6 +413,83 @@
     } finally {
       runningCommand = null;
     }
+  }
+
+  async function approvePlugin(pluginId: string) {
+    if (saving) {
+      return;
+    }
+    saving = `${pluginId}:approval`;
+    try {
+      await requestJson(`/api/plugins/${encodeURIComponent(pluginId)}/approve`, { method: 'POST' });
+      await loadPluginState();
+      addToast(`${pluginId}: approved`, 'success');
+    } catch {
+      addToast(`${pluginId}: approval failed`, 'error');
+    } finally {
+      saving = null;
+    }
+  }
+
+  async function revokeApproval(pluginId: string) {
+    if (saving) {
+      return;
+    }
+    saving = `${pluginId}:approval`;
+    try {
+      await requestJson(`/api/plugins/${encodeURIComponent(pluginId)}/revoke-approval`, {
+        method: 'POST',
+      });
+      await loadPluginState();
+      addToast(`${pluginId}: approval revoked`, 'success');
+    } catch {
+      addToast(`${pluginId}: revoke failed`, 'error');
+    } finally {
+      saving = null;
+    }
+  }
+
+  async function runMarketplaceAction(entry: PluginMarketplaceEntry, action: MarketplaceAction) {
+    const key = `${entry.id}:${action}`;
+    if (marketplaceAction) {
+      return;
+    }
+    marketplaceAction = key;
+    try {
+      const encodedId = encodeURIComponent(entry.id);
+      if (action === 'uninstall') {
+        marketplace = await deleteJson<PluginMarketplaceSnapshot>(
+          `/api/plugins/marketplace/${encodedId}`,
+        );
+      } else {
+        marketplace = await requestJson<PluginMarketplaceSnapshot>(
+          `/api/plugins/marketplace/${encodedId}/${action}`,
+          { method: 'POST' },
+        );
+      }
+      clearPluginFrontendCache(entry.id);
+      await loadPluginState();
+      addToast(`${entry.name}: ${action} complete`, 'success');
+    } catch (error) {
+      const detail = apiErrorMessage(error);
+      addToast(`${entry.name}: ${action} failed${detail ? `: ${detail}` : ''}`, 'error');
+    } finally {
+      marketplaceAction = null;
+    }
+  }
+
+  function requestMarketplaceAction(entry: PluginMarketplaceEntry) {
+    const action = marketplaceActionType(entry);
+    marketplaceReview = { entry, action };
+  }
+
+  async function confirmMarketplaceReview() {
+    if (!marketplaceReview) {
+      return;
+    }
+    const review = marketplaceReview;
+    marketplaceReview = null;
+    await runMarketplaceAction(review.entry, review.action);
   }
 
   function eventPayload(event: PluginEvent): string {
@@ -302,11 +536,159 @@
   }
 
   function statusClass(status: PluginRuntimeInfo['status']): string {
-    return status === 'started' ? 'ok' : status === 'failed' ? 'bad' : 'idle';
+    return status === 'started'
+      ? 'ok'
+      : status === 'failed' || status === 'quarantined'
+        ? 'bad'
+        : 'idle';
+  }
+
+  function healthFor(pluginId: string): PluginRuntimeHealth | undefined {
+    return runtimeHealth.find((health) => health.pluginId === pluginId);
+  }
+
+  function formatBytes(value: number): string {
+    if (value < 1024 * 1024) {
+      return `${Math.round(value / 1024)} KiB`;
+    }
+    return `${(value / 1024 / 1024).toFixed(1)} MiB`;
   }
 
   function listText(values: readonly string[]): string {
     return values.length > 0 ? values.join(', ') : 'none';
+  }
+
+  function shortFingerprint(value: string): string {
+    return value.slice(0, 12);
+  }
+
+  function marketplaceLabel(entry: PluginMarketplaceEntry): string {
+    if (entry.state === 'update_available') {
+      return 'update';
+    }
+    if (entry.state === 'local') {
+      return 'local';
+    }
+    return entry.state;
+  }
+
+  function marketplaceActionLabel(entry: PluginMarketplaceEntry): string {
+    if (entry.state === 'available') {
+      return 'Install';
+    }
+    if (entry.state === 'update_available') {
+      return 'Update';
+    }
+    return 'Uninstall';
+  }
+
+  function marketplaceActionType(entry: PluginMarketplaceEntry): MarketplaceAction {
+    if (entry.state === 'available') {
+      return 'install';
+    }
+    if (entry.state === 'update_available') {
+      return 'update';
+    }
+    return 'uninstall';
+  }
+
+  function marketplaceActionKey(entry: PluginMarketplaceEntry): string {
+    return `${entry.id}:${marketplaceActionType(entry)}`;
+  }
+
+  function marketplaceActionDisabled(entry: PluginMarketplaceEntry): boolean {
+    const action = marketplaceActionType(entry);
+    return (
+      marketplaceAction !== null ||
+      entry.status === 'yanked' ||
+      (action !== 'uninstall' && entry.compatibilityWarnings.length > 0)
+    );
+  }
+
+  function marketplaceTrust(entry: PluginMarketplaceEntry): string {
+    if (entry.signature) {
+      return entry.signature.keyId
+        ? `${entry.signature.algorithm}:${entry.signature.keyId}`
+        : entry.signature.algorithm;
+    }
+    return entry.installed?.signatureAlgorithm ?? 'unsigned';
+  }
+
+  function marketplaceEntryMatches(entry: PluginMarketplaceEntry): boolean {
+    const query = marketplaceQuery.trim().toLowerCase();
+    const matchesQuery =
+      !query ||
+      [
+        entry.id,
+        entry.name,
+        entry.description,
+        entry.category,
+        entry.author,
+        entry.readme,
+        ...(entry.tags ?? []),
+        ...entry.capabilities,
+        ...entry.permissions,
+      ]
+        .filter((value): value is string => typeof value === 'string')
+        .some((value) => value.toLowerCase().includes(query));
+    if (!matchesQuery) {
+      return false;
+    }
+    if (marketplaceFilter === 'available') {
+      return entry.state === 'available';
+    }
+    if (marketplaceFilter === 'installed') {
+      return entry.state === 'installed';
+    }
+    if (marketplaceFilter === 'updates') {
+      return entry.state === 'update_available';
+    }
+    if (marketplaceFilter === 'local') {
+      return entry.state === 'local';
+    }
+    if (marketplaceFilter === 'deprecated') {
+      return entry.status === 'deprecated' || entry.status === 'yanked';
+    }
+    return true;
+  }
+
+  function formatDate(value: string | undefined): string {
+    if (!value) {
+      return '';
+    }
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString();
+  }
+
+  function marketplaceVersionLine(entry: PluginMarketplaceEntry): string {
+    if (!entry.installed) {
+      return `new install v${entry.version}`;
+    }
+    if (entry.installed.version === entry.version) {
+      return `installed v${entry.installed.version}`;
+    }
+    return `installed v${entry.installed.version} -> catalog v${entry.version}`;
+  }
+
+  function marketplaceCompatibility(entry: PluginMarketplaceEntry): string {
+    const parts = [];
+    if (entry.compatibility?.minDockscopeVersion) {
+      parts.push(`min ${entry.compatibility.minDockscopeVersion}`);
+    }
+    if (entry.compatibility?.maxDockscopeVersion) {
+      parts.push(`max ${entry.compatibility.maxDockscopeVersion}`);
+    }
+    return parts.length > 0 ? parts.join(' · ') : 'not declared';
+  }
+
+  function catalogTrustText(): string {
+    if (marketplace.catalogSignatureVerified === true) {
+      return 'catalog signed';
+    }
+    if (marketplace.catalogSignatureVerified === false) {
+      return 'catalog signature unverified';
+    }
+    return 'catalog unsigned';
   }
 </script>
 
@@ -337,6 +719,13 @@
         </button>
         <button
           class="tab"
+          class:active={tab === 'marketplace'}
+          onclick={() => (tab = 'marketplace')}
+        >
+          Marketplace
+        </button>
+        <button
+          class="tab"
           class:active={tab === 'compatibility'}
           onclick={() => (tab = 'compatibility')}
         >
@@ -361,10 +750,14 @@
           {#if errors.length > 0}
             <span class="error-count">{errors.length} load errors</span>
           {/if}
+          {#if warnings.length > 0}
+            <span class="warning-count">{warnings.length} warnings</span>
+          {/if}
         </div>
 
         <div class="list">
           {#each plugins as plugin}
+            {@const health = healthFor(plugin.manifest.id)}
             <div class="item">
               <span class="status-dot {statusClass(plugin.status)}"></span>
               <div class="item-main">
@@ -382,7 +775,16 @@
                   {#if plugin.manifest.execution?.isolation}
                     <span>{plugin.manifest.execution.isolation}</span>
                   {/if}
+                  {#if health?.pid}<span>pid {health.pid}</span>{/if}
+                  {#if health?.metrics}<span>rss {formatBytes(health.metrics.rssBytes)}</span>{/if}
+                  {#if health?.metrics}<span>cpu {health.metrics.cpuPercent.toFixed(1)}%</span>{/if}
+                  {#if health && health.crashCount > 0}
+                    <span>{health.crashCount} crashes</span>
+                  {/if}
                 </div>
+                {#if plugin.quarantineReason}
+                  <div class="warning-line">Quarantined: {plugin.quarantineReason}</div>
+                {/if}
                 {#if plugin.error}
                   <div class="error-line">{plugin.error}</div>
                 {/if}
@@ -428,6 +830,25 @@
             {/each}
           </div>
         {/if}
+        {#if warnings.length > 0}
+          <div class="section-title">Manifest Warnings</div>
+          <div class="list">
+            {#each warnings as warning}
+              <div class="item warning">
+                <div class="item-main">
+                  <div class="item-title">
+                    <span>{warning.id ?? 'unknown plugin'}</span>
+                    <code>{warning.code}</code>
+                  </div>
+                  <div class="warning-line">{warning.message}</div>
+                  {#if warning.path}
+                    <div class="path-line">{warning.path}</div>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
       {:else if tab === 'extensions'}
         {#if extensions.length === 0}
           <div class="empty-msg">No UI extensions registered.</div>
@@ -445,8 +866,19 @@
                     <div class="item-desc">{extension.description}</div>
                   {/if}
                   {#if extension.content}
-                    <pre class="content-preview">{extension.content.body}</pre>
+                    <pre class="content-preview">{extensionContentPreview(extension)}</pre>
                   {/if}
+                  <div class="item-meta">
+                    {#if extension.frontendView}
+                      <span>frontend {extension.frontendView}</span>
+                    {/if}
+                    {#if extension.context?.runtimes?.length}
+                      <span>runtime {extension.context.runtimes.join(', ')}</span>
+                    {/if}
+                    {#if extension.context?.kinds?.length}
+                      <span>kind {extension.context.kinds.join(', ')}</span>
+                    {/if}
+                  </div>
                   {#if extension.action}
                     <div class="item-desc">
                       action {extension.action.type}
@@ -477,13 +909,56 @@
                   {#if command.description}
                     <div class="item-desc">{command.description}</div>
                   {/if}
+                  {#if command.input?.fields.length}
+                    <div class="command-inputs">
+                      {#each command.input.fields as field}
+                        <label class="field command-field">
+                          <span class="field-label">{field.label}</span>
+                          {#if field.type === 'boolean'}
+                            <input
+                              type="checkbox"
+                              checked={Boolean(commandFieldValue(command, field))}
+                              onchange={(event) =>
+                                setCommandInputValue(command, field.key, checkedValue(event))}
+                            />
+                          {:else if field.type === 'select'}
+                            <select
+                              value={String(commandFieldValue(command, field))}
+                              onchange={(event) =>
+                                setCommandInputValue(command, field.key, inputValue(event))}
+                            >
+                              {#each field.options ?? [] as option}
+                                <option value={option.value}>{option.label}</option>
+                              {/each}
+                            </select>
+                          {:else}
+                            <input
+                              type={field.type === 'number' ? 'number' : 'text'}
+                              value={String(commandFieldValue(command, field))}
+                              oninput={(event) =>
+                                setCommandInputValue(
+                                  command,
+                                  field.key,
+                                  field.type === 'number'
+                                    ? Number(inputValue(event))
+                                    : inputValue(event),
+                                )}
+                            />
+                          {/if}
+                          {#if field.description}
+                            <span class="field-desc">{field.description}</span>
+                          {/if}
+                        </label>
+                      {/each}
+                    </div>
+                  {/if}
                 </div>
                 <button
                   class="save-btn"
                   disabled={runningCommand !== null}
                   onclick={() => runCommand(command)}
                 >
-                  {runningCommand === `${command.pluginId}:${command.id}` ? 'Running...' : 'Run'}
+                  {runningCommand === commandKey(command) ? 'Running...' : 'Run'}
                 </button>
               </div>
             {/each}
@@ -526,6 +1001,7 @@
                     <span>{review.enabled ? 'enabled' : 'disabled'}</span>
                     <span>{review.status}</span>
                     <span>{review.executionIsolation}</span>
+                    <span>{review.approvalStatus}</span>
                   </div>
                   <div class="review-grid">
                     <div>
@@ -549,6 +1025,10 @@
                       <span>{listText(review.uiSlots)}</span>
                     </div>
                     <div>
+                      <span class="review-label">Frontend</span>
+                      <span>{listText(review.frontendSlots)}</span>
+                    </div>
+                    <div>
                       <span class="review-label">Config</span>
                       <span>{listText(review.configFields)}</span>
                     </div>
@@ -561,7 +1041,159 @@
                   {#each review.compatibilityWarnings as warning}
                     <div class="error-line">{warning}</div>
                   {/each}
+                  <div class="approval-row">
+                    <code>{shortFingerprint(review.fingerprint)}</code>
+                    {#if review.approvedAt}
+                      <span>approved {new Date(review.approvedAt).toLocaleString()}</span>
+                    {/if}
+                    {#if review.approvalStatus !== 'approved'}
+                      <button
+                        class="save-btn"
+                        disabled={saving !== null}
+                        onclick={() => approvePlugin(review.pluginId)}
+                      >
+                        {saving === `${review.pluginId}:approval` ? 'Saving...' : 'Approve'}
+                      </button>
+                    {:else}
+                      <button
+                        class="save-btn"
+                        disabled={saving !== null}
+                        onclick={() => revokeApproval(review.pluginId)}
+                      >
+                        {saving === `${review.pluginId}:approval` ? 'Saving...' : 'Revoke'}
+                      </button>
+                    {/if}
+                  </div>
                 </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      {:else if tab === 'marketplace'}
+        {#if marketplace.catalogError}
+          <div class="marketplace-alert">
+            <span>Catalog unavailable: {marketplace.catalogError}</span>
+            <button
+              class="marketplace-retry"
+              title="Retry catalog"
+              aria-label="Retry catalog"
+              onclick={() => void loadPluginState()}
+            >
+              <Icon name="restart" size={13} />
+            </button>
+          </div>
+        {/if}
+        {#if !marketplace.configured && marketplace.entries.length === 0}
+          <div class="empty-msg">No plugin marketplace configured.</div>
+        {:else if marketplace.entries.length === 0}
+          {#if !marketplace.catalogError}
+            <div class="empty-msg">{marketplace.catalogName ?? 'Plugin marketplace'} is empty.</div>
+          {/if}
+        {:else}
+          <div class="summary-row">
+            <span>{marketplace.catalogName ?? 'Local plugins'}</span>
+            <span
+              >{catalogTrustText()} · {marketplaceEntries.length} / {marketplace.entries.length} entries</span
+            >
+          </div>
+          <div class="path-line marketplace-registry">{marketplace.registryDir}</div>
+          <div class="marketplace-controls">
+            <input
+              type="text"
+              placeholder="Search marketplace"
+              value={marketplaceQuery}
+              oninput={(event) => (marketplaceQuery = inputValue(event))}
+            />
+            <select
+              value={marketplaceFilter}
+              onchange={(event) => (marketplaceFilter = inputValue(event) as MarketplaceFilter)}
+            >
+              <option value="all">All</option>
+              <option value="available">Available</option>
+              <option value="installed">Installed</option>
+              <option value="updates">Updates</option>
+              <option value="local">Local</option>
+              <option value="deprecated">Deprecated</option>
+            </select>
+          </div>
+          <div class="list">
+            {#each marketplaceEntries as entry}
+              <div class="item">
+                <div class="slot-badge marketplace-{entry.state}">
+                  {marketplaceLabel(entry)}
+                </div>
+                <div class="item-main">
+                  <div class="marketplace-identity">
+                    {#if entry.iconUrl}
+                      <img class="marketplace-icon" src={entry.iconUrl} alt="" loading="lazy" />
+                    {/if}
+                    <div class="item-title">
+                      <span>{entry.name}</span>
+                      <code>{entry.id} v{entry.version}</code>
+                    </div>
+                  </div>
+                  {#if entry.description}
+                    <div class="item-desc">{entry.description}</div>
+                  {/if}
+                  <div class="item-meta">
+                    <span>{marketplaceTrust(entry)}</span>
+                    <span>{entry.capabilities.length} capabilities</span>
+                    <span>{entry.permissions.length} permissions</span>
+                    {#if entry.license}
+                      <span>{entry.license}</span>
+                    {/if}
+                    {#if entry.status !== 'active'}
+                      <span>{entry.status}</span>
+                    {/if}
+                    {#if entry.category}
+                      <span>{entry.category}</span>
+                    {/if}
+                    <span>{entry.tags.length} tags</span>
+                  </div>
+                  {#if entry.installed}
+                    <div class="item-desc">
+                      installed v{entry.installed.version}
+                      {#if entry.runtime}
+                        · {entry.runtime.enabled ? 'enabled' : 'disabled'} {entry.runtime.status}
+                      {/if}
+                    </div>
+                  {/if}
+                  <div class="marketplace-facts">
+                    <span>{marketplaceVersionLine(entry)}</span>
+                    <span>compat {marketplaceCompatibility(entry)}</span>
+                    {#if entry.publishedAt}
+                      <span>published {formatDate(entry.publishedAt)}</span>
+                    {/if}
+                  </div>
+                  {#if entry.releaseNotes}
+                    <div class="item-desc">{entry.releaseNotes}</div>
+                  {/if}
+                  {#if entry.repositoryUrl || entry.readmeUrl}
+                    <div class="marketplace-links">
+                      {#if entry.repositoryUrl}
+                        <a href={entry.repositoryUrl} target="_blank" rel="noreferrer">Repo</a>
+                      {/if}
+                      {#if entry.readmeUrl}
+                        <a href={entry.readmeUrl} target="_blank" rel="noreferrer">README</a>
+                      {/if}
+                    </div>
+                  {/if}
+                  {#each entry.compatibilityWarnings as warning}
+                    <div class="error-line">{warning}</div>
+                  {/each}
+                  <div class="item-desc">
+                    {entry.resolvedPackageUrl ?? entry.installed?.path ?? 'local registry'}
+                  </div>
+                </div>
+                <button
+                  class="save-btn"
+                  disabled={marketplaceActionDisabled(entry)}
+                  onclick={() => requestMarketplaceAction(entry)}
+                >
+                  {marketplaceAction === marketplaceActionKey(entry)
+                    ? 'Working...'
+                    : marketplaceActionLabel(entry)}
+                </button>
               </div>
             {/each}
           </div>
@@ -614,7 +1246,7 @@
             </div>
           {/each}
         </div>
-      {:else if tab === 'config' && configurable.length === 0}
+      {:else if tab === 'config' && configurable.length === 0 && settingsExtensions.length === 0}
         <div class="empty-msg">No configurable plugins.</div>
       {:else if tab === 'config'}
         <div class="config-list">
@@ -669,6 +1301,9 @@
               {/each}
             </div>
           {/each}
+          {#each settingsExtensions as extension (extension.pluginId + extension.id)}
+            <PluginExtension {extension} context={{}} onAction={runExtensionAction} />
+          {/each}
         </div>
       {:else if secrets.length === 0}
         <div class="empty-msg">No plugin secrets declared.</div>
@@ -715,6 +1350,94 @@
         </div>
       {/if}
     </div>
+
+    {#if marketplaceReview}
+      <div class="confirm-layer">
+        <div class="confirm-box">
+          <div class="confirm-header">
+            <div>
+              <div class="confirm-title">{marketplaceReview.entry.name}</div>
+              <code>{marketplaceReview.entry.id} v{marketplaceReview.entry.version}</code>
+            </div>
+            <button class="close-btn" onclick={() => (marketplaceReview = null)}>&times;</button>
+          </div>
+
+          <div class="review-grid marketplace-review-grid">
+            <div>
+              <span class="review-label">Action</span>
+              <span>{marketplaceReview.action}</span>
+            </div>
+            <div>
+              <span class="review-label">Version</span>
+              <span>{marketplaceVersionLine(marketplaceReview.entry)}</span>
+            </div>
+            <div>
+              <span class="review-label">Signature</span>
+              <span>{marketplaceTrust(marketplaceReview.entry)}</span>
+            </div>
+            <div>
+              <span class="review-label">Package</span>
+              <code>{shortFingerprint(marketplaceReview.entry.packageSha256 ?? 'unsigned')}</code>
+            </div>
+            <div>
+              <span class="review-label">Capabilities</span>
+              <span>{listText(marketplaceReview.entry.capabilities)}</span>
+            </div>
+            <div>
+              <span class="review-label">Permissions</span>
+              <span>{listText(marketplaceReview.entry.permissions)}</span>
+            </div>
+            <div>
+              <span class="review-label">Compatibility</span>
+              <span>{marketplaceCompatibility(marketplaceReview.entry)}</span>
+            </div>
+            <div>
+              <span class="review-label">Registry</span>
+              <code>{marketplace.registryDir}</code>
+            </div>
+          </div>
+
+          {#if marketplaceReview.entry.releaseNotes}
+            <div class="release-notes">{marketplaceReview.entry.releaseNotes}</div>
+          {/if}
+
+          {#if marketplaceReview.entry.screenshots.length > 0}
+            <div class="screenshot-strip">
+              {#each marketplaceReview.entry.screenshots as screenshot}
+                <img
+                  src={screenshot}
+                  alt={`${marketplaceReview.entry.name} screenshot`}
+                  loading="lazy"
+                />
+              {/each}
+            </div>
+          {/if}
+
+          {#if marketplaceReview.entry.readme}
+            <pre class="readme-preview">{marketplaceReview.entry.readme}</pre>
+          {:else if marketplaceReview.entry.readmeUrl}
+            <div class="marketplace-links review-links">
+              <a href={marketplaceReview.entry.readmeUrl} target="_blank" rel="noreferrer">
+                Open README
+              </a>
+            </div>
+          {/if}
+
+          <div class="confirm-actions">
+            <button class="save-btn" onclick={() => (marketplaceReview = null)}>Cancel</button>
+            <button
+              class="save-btn primary"
+              disabled={marketplaceActionDisabled(marketplaceReview.entry)}
+              onclick={() => void confirmMarketplaceReview()}
+            >
+              {marketplaceAction === marketplaceActionKey(marketplaceReview.entry)
+                ? 'Working...'
+                : marketplaceActionLabel(marketplaceReview.entry)}
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
   </div>
 </div>
 
@@ -731,6 +1454,7 @@
   }
 
   .panel {
+    position: relative;
     width: min(760px, calc(100vw - 28px));
     max-height: min(760px, calc(100vh - 28px));
     display: flex;
@@ -808,6 +1532,46 @@
     color: #ff5f7a;
   }
 
+  .warning-count,
+  .warning-line {
+    color: var(--accent-amber);
+  }
+
+  .marketplace-alert {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 10px;
+    padding: 9px 10px;
+    border: 1px solid rgba(255, 95, 122, 0.2);
+    border-radius: 6px;
+    background: rgba(255, 95, 122, 0.06);
+    color: #ff7d92;
+    font-size: 11px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  .marketplace-retry {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    flex: 0 0 28px;
+    place-items: center;
+    padding: 0;
+    border: 1px solid rgba(255, 125, 146, 0.28);
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.035);
+    color: #ff9aab;
+    cursor: pointer;
+  }
+
+  .marketplace-retry:hover {
+    border-color: rgba(255, 125, 146, 0.5);
+    background: rgba(255, 255, 255, 0.07);
+  }
+
   .list,
   .config-list {
     display: flex;
@@ -827,6 +1591,10 @@
 
   .item.error {
     border-color: rgba(255, 95, 122, 0.18);
+  }
+
+  .item.warning {
+    border-color: rgba(255, 138, 43, 0.2);
   }
 
   .item-main {
@@ -875,6 +1643,7 @@
 
   .item-meta {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
   }
 
@@ -937,6 +1706,183 @@
     color: #ff5f7a;
   }
 
+  .slot-badge.marketplace-available {
+    background: rgba(0, 228, 255, 0.1);
+    color: #00e4ff;
+  }
+
+  .slot-badge.marketplace-installed {
+    background: rgba(0, 255, 106, 0.08);
+    color: #00ff6a;
+  }
+
+  .slot-badge.marketplace-update_available {
+    background: rgba(255, 176, 46, 0.1);
+    color: #ffb02e;
+  }
+
+  .slot-badge.marketplace-local {
+    background: rgba(172, 138, 255, 0.12);
+    color: #bda5ff;
+  }
+
+  .marketplace-registry {
+    margin: -4px 0 10px;
+    overflow-wrap: anywhere;
+  }
+
+  .marketplace-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 150px;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .marketplace-identity {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+  }
+
+  .marketplace-icon {
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    object-fit: cover;
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .marketplace-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+    font-size: 11px;
+  }
+
+  .marketplace-links a {
+    color: #00e4ff;
+    text-decoration: none;
+  }
+
+  .marketplace-links a:hover {
+    text-decoration: underline;
+  }
+
+  .marketplace-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+    font-size: 10px;
+    color: rgba(226, 232, 240, 0.62);
+  }
+
+  .marketplace-facts span {
+    padding: 3px 6px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.035);
+  }
+
+  .confirm-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgba(5, 7, 17, 0.78);
+    backdrop-filter: blur(4px);
+  }
+
+  .confirm-box {
+    width: min(620px, 100%);
+    max-height: 100%;
+    overflow: auto;
+    padding: 14px;
+    background: rgba(10, 13, 29, 0.98);
+    border: 1px solid rgba(0, 228, 255, 0.14);
+    border-radius: 8px;
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+  }
+
+  .confirm-header,
+  .confirm-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .confirm-title {
+    margin-bottom: 2px;
+    color: #e2e8f0;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .marketplace-review-grid {
+    margin-top: 14px;
+  }
+
+  .release-notes {
+    margin-top: 12px;
+    padding: 10px;
+    border-left: 2px solid rgba(0, 228, 255, 0.34);
+    background: rgba(0, 228, 255, 0.04);
+    color: rgba(226, 232, 240, 0.76);
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+
+  .screenshot-strip {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .screenshot-strip img {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .readme-preview {
+    max-height: 220px;
+    overflow: auto;
+    margin: 12px 0 0;
+    padding: 10px;
+    white-space: pre-wrap;
+    border: 1px solid rgba(255, 255, 255, 0.055);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.2);
+    color: rgba(226, 232, 240, 0.72);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.55;
+  }
+
+  .review-links {
+    margin-top: 12px;
+  }
+
+  .confirm-actions {
+    margin-top: 14px;
+    justify-content: flex-end;
+  }
+
+  .save-btn.primary {
+    background: rgba(0, 228, 255, 0.14);
+    border-color: rgba(0, 228, 255, 0.32);
+    color: #e2fbff;
+  }
+
   .review-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -969,12 +1915,35 @@
     color: rgba(226, 232, 240, 0.7);
   }
 
+  .approval-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+    margin-top: 10px;
+    font-size: 11px;
+    color: rgba(226, 232, 240, 0.7);
+  }
+
   .content-preview {
     margin: 8px 0 0;
     white-space: pre-wrap;
     font-family: var(--font-mono);
     font-size: 10px;
     color: rgba(226, 232, 240, 0.66);
+  }
+
+  .command-inputs {
+    display: grid;
+    gap: 4px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  .command-field {
+    grid-template-columns: minmax(100px, 150px) minmax(0, 1fr);
+    padding: 4px 0;
   }
 
   .config-block {
@@ -1069,7 +2038,12 @@
       grid-template-columns: 1fr;
     }
 
-    .migration-row {
+    .migration-row,
+    .approval-row {
+      grid-template-columns: 1fr;
+    }
+
+    .marketplace-controls {
       grid-template-columns: 1fr;
     }
   }

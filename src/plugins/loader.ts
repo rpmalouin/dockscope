@@ -2,35 +2,56 @@ import { readdir, readFile, stat } from 'fs/promises';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { errorMessage } from '../utils.js';
-import type { DataSourceDescriptor, GraphSourceAdapter } from '../core/model.js';
+import type { GraphSourceAdapter, SourceEvent, SourceGraphSnapshot } from '../core/model.js';
+import type {
+  EntityActionProvider,
+  EntityDiagnosticProvider,
+  EntityExecProvider,
+  EntityFilesystemProvider,
+  EntityInspectProvider,
+  EntityLifecycleProvider,
+  EntityLogsProvider,
+  EntityLogStreamProvider,
+  EntityStatsProvider,
+  ProjectProvider,
+  ProjectSummary,
+  ResourceProvider,
+} from '../core/operations.js';
+import type { EntityActionDeclaration, EntityActionResult } from '../core/entity-actions.js';
+import type { MetricAnalysisProvider, MetricAnalysisResult } from '../core/plugin-analysis.js';
+import type { PluginSystemDeclaration, PluginSystemProvider } from '../core/plugin-system.js';
+import type {
+  PluginConnectionDeclaration,
+  PluginConnectionProvider,
+} from '../core/plugin-connections.js';
 import { defaultPluginConfig, type PluginConfig } from '../core/plugin-config.js';
 import {
   type DockscopePlugin,
   type PluginLoadError,
+  type PluginLoadWarning,
   type PluginManifest,
   validatePluginManifest,
+  validatePluginManifestWithWarnings,
 } from '../core/plugins.js';
 import { isPluginPermission, type PluginPermission } from '../core/capabilities.js';
 import { createPluginHostApi, type PluginHostApi } from './hostApi.js';
 import type { PluginSecretStore } from './secretStore.js';
 import type { PluginEvent } from '../core/plugin-events.js';
-import {
-  collectIsolatedPluginGraphSource,
-  describeIsolatedPluginGraphSources,
-  runIsolatedPluginCommand,
-} from './processSandbox.js';
+import { PluginProcessSandbox } from './processSandbox.js';
+import type { SandboxEntityProviderKind, SandboxPluginDescriptor } from './processProtocol.js';
+import type {
+  ContainerDiffEntry,
+  ContainerInspect,
+  ContainerStats,
+  ContainerTopResult,
+  CrashDiagnostic,
+} from '../types.js';
+import type { PluginCommandResult } from '../core/plugin-commands.js';
+import type { PluginFactory } from '../core/plugin-api.js';
+import type { PluginRuntimeCrash } from '../core/plugin-runtime.js';
 
 const PLUGIN_MANIFEST_FILE = 'plugin.json';
-
-export interface PluginFactoryContext {
-  manifest: PluginManifest;
-  pluginDir: string;
-  config: PluginConfig;
-  host: PluginHostApi;
-  logger: Pick<Console, 'debug' | 'info' | 'warn' | 'error'>;
-}
-
-type PluginFactory = (context: PluginFactoryContext) => DockscopePlugin | Promise<DockscopePlugin>;
+const MAX_PLUGIN_FRONTEND_BYTES = 256 * 1024;
 
 type ExternalPluginModule = Record<string, unknown>;
 
@@ -49,18 +70,22 @@ export interface ExternalPluginLoadOptions {
   cacheBust?: boolean;
   processCommandTimeoutMs?: number;
   processMaxStderrBytes?: number;
+  processMemoryLimitMb?: number;
   logger?: Pick<Console, 'debug' | 'info' | 'warn' | 'error'>;
+  onRuntimeCrash?: (pluginId: string, crash: PluginRuntimeCrash) => void | Promise<void>;
 }
 
 export interface ExternalPluginLoadResult {
   plugins: DockscopePlugin[];
   configs: Map<string, PluginConfig>;
   errors: PluginLoadError[];
+  warnings: PluginLoadWarning[];
 }
 
 export interface ExternalPluginManifestValidationResult {
   manifests: PluginManifest[];
   errors: PluginLoadError[];
+  warnings: PluginLoadWarning[];
 }
 
 function allowedPermissionSet(
@@ -156,6 +181,41 @@ function resolvePluginEntry(manifestPath: string, manifest: PluginManifest): str
   return entryPath;
 }
 
+function resolvePluginFrontendEntry(
+  manifestPath: string,
+  manifest: PluginManifest,
+): string | undefined {
+  if (!manifest.frontend) {
+    return undefined;
+  }
+  const pluginDir = path.dirname(manifestPath);
+  const entryPath = path.resolve(pluginDir, manifest.frontend.entry);
+  const relative = path.relative(pluginDir, entryPath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('Plugin frontend entry must stay inside the plugin directory');
+  }
+  return entryPath;
+}
+
+function withFrontendBundle(
+  plugin: DockscopePlugin,
+  frontendEntry: string | undefined,
+): DockscopePlugin {
+  if (!frontendEntry) {
+    return plugin;
+  }
+  return {
+    ...plugin,
+    async getFrontendBundle() {
+      const source = await readFile(frontendEntry, 'utf-8');
+      if (Buffer.byteLength(source, 'utf-8') > MAX_PLUGIN_FRONTEND_BYTES) {
+        throw new Error(`Plugin frontend bundle exceeds ${MAX_PLUGIN_FRONTEND_BYTES} bytes`);
+      }
+      return source;
+    },
+  };
+}
+
 function pluginFactoryFromModule(module: ExternalPluginModule): PluginFactory | DockscopePlugin {
   const candidate = module.default ?? module.createPlugin ?? module.plugin;
   if (!candidate) {
@@ -192,75 +252,340 @@ async function instantiatePlugin(
   return { ...plugin, manifest: validatedManifest };
 }
 
-function createGraphSourceProxy(
-  options: {
-    manifest: PluginManifest;
-    pluginDir: string;
-    entryPath: string;
-    config: PluginConfig;
-    publishEvent?: ExternalPluginLoadOptions['publishEvent'];
-    timeoutMs?: number;
-    maxStderrBytes?: number;
-  },
-  descriptor: DataSourceDescriptor,
-): GraphSourceAdapter {
-  return {
-    describe: () => ({ ...descriptor }),
-    collectGraph: () =>
-      collectIsolatedPluginGraphSource({
-        entryPath: options.entryPath,
-        manifest: options.manifest,
-        pluginDir: options.pluginDir,
-        config: options.config,
-        sourceId: descriptor.id,
-        timeoutMs: options.timeoutMs,
-        maxStderrBytes: options.maxStderrBytes,
-        publishEvent: options.publishEvent,
-      }),
-  };
-}
-
 async function createProcessIsolatedPlugin(options: {
   manifest: PluginManifest;
   pluginDir: string;
   entryPath: string;
   config: PluginConfig;
+  secretStore?: PluginSecretStore;
   publishEvent?: ExternalPluginLoadOptions['publishEvent'];
   timeoutMs?: number;
   maxStderrBytes?: number;
+  memoryLimitMb?: number;
+  logger: Pick<Console, 'debug' | 'info' | 'warn' | 'error'>;
+  onRuntimeCrash?: ExternalPluginLoadOptions['onRuntimeCrash'];
 }): Promise<DockscopePlugin> {
-  const manifestCommands = options.manifest.commands ?? [];
-  const graphSources = options.manifest.capabilities.includes('source.graph')
-    ? (
-        await describeIsolatedPluginGraphSources({
-          entryPath: options.entryPath,
-          manifest: options.manifest,
-          pluginDir: options.pluginDir,
-          config: options.config,
-          timeoutMs: options.timeoutMs,
-          maxStderrBytes: options.maxStderrBytes,
-          publishEvent: options.publishEvent,
-        })
-      ).map((descriptor) => createGraphSourceProxy(options, descriptor))
-    : [];
+  const sandbox = new PluginProcessSandbox({
+    ...options,
+    onCrash: (error, restartCount) => {
+      const crash = { message: error.message, restartCount, time: Date.now() };
+      options.logger.error(
+        `Plugin process crashed (${options.manifest.id}, restart ${restartCount}): ${error.message}`,
+      );
+      void Promise.resolve(
+        options.publishEvent?.(options.manifest.id, 'runtime.crashed', { ...crash }),
+      ).catch((publishError) => {
+        options.logger.error(
+          `Plugin crash event failed (${options.manifest.id}): ${errorMessage(publishError)}`,
+        );
+      });
+      void Promise.resolve(options.onRuntimeCrash?.(options.manifest.id, crash)).catch(
+        (reportError) => {
+          options.logger.error(
+            `Plugin crash state update failed (${options.manifest.id}): ${errorMessage(reportError)}`,
+          );
+        },
+      );
+    },
+  });
+  let descriptor: SandboxPluginDescriptor;
+  try {
+    descriptor = await sandbox.initialize();
+  } catch (error) {
+    sandbox.dispose();
+    throw error;
+  }
+  if (descriptor.manifest.id !== options.manifest.id) {
+    sandbox.dispose();
+    throw new Error(
+      `Plugin process manifest id "${descriptor.manifest.id}" does not match "${options.manifest.id}"`,
+    );
+  }
+  const manifest = validatePluginManifest({
+    ...descriptor.manifest,
+    execution: {
+      ...descriptor.manifest.execution,
+      isolation: 'process',
+    },
+  });
+  const graphSources: GraphSourceAdapter[] = descriptor.graphSources.map((source) => {
+    const adapter: GraphSourceAdapter = {
+      describe: () => ({ ...source.descriptor }),
+      collectGraph: () =>
+        sandbox.request<SourceGraphSnapshot>({
+          type: 'collectGraph',
+          sourceId: source.descriptor.id,
+        }),
+    };
+    if (source.supportsEvents) {
+      adapter.startEvents = (callback, onError, onClose) =>
+        sandbox.openStream(
+          (streamId) => ({
+            type: 'startGraphEvents',
+            sourceId: source.descriptor.id,
+            streamId,
+          }),
+          {
+            onData: (event) => callback(event as SourceEvent),
+            onError: (error) => onError?.(error),
+            onEnd: () => onClose?.(),
+          },
+        );
+    }
+    return adapter;
+  });
+  const canHandleEntity = (
+    provider: SandboxEntityProviderKind,
+    providerIndex: number,
+    ref: Parameters<EntityStatsProvider['canHandle']>[0],
+  ) =>
+    sandbox.request<boolean>({
+      type: 'canHandleEntity',
+      provider,
+      providerIndex,
+      ref,
+    });
   const plugin: DockscopePlugin = {
-    manifest: options.manifest,
-    getCommands: () => manifestCommands,
-    runCommand: (commandId, input) =>
-      runIsolatedPluginCommand({
-        entryPath: options.entryPath,
-        manifest: options.manifest,
-        pluginDir: options.pluginDir,
-        config: options.config,
-        commandId,
-        input,
-        timeoutMs: options.timeoutMs,
-        maxStderrBytes: options.maxStderrBytes,
-        publishEvent: options.publishEvent,
-      }),
+    manifest,
+    configure: (config) => sandbox.configure(config),
+    start: () => sandbox.start(),
+    stop: () => sandbox.stop(),
+    getRuntimeHealth: () => sandbox.getRuntimeHealth(),
   };
-  if (options.manifest.capabilities.includes('source.graph')) {
+  if (manifest.capabilities.includes('ui.command')) {
+    plugin.getCommands = () => descriptor.commands;
+    plugin.runCommand = (commandId, input) =>
+      sandbox.request<PluginCommandResult>({ type: 'runCommand', commandId, input });
+  }
+  if (descriptor.ui.length > 0) {
+    plugin.getUiExtensions = () => descriptor.ui;
+  }
+  if (manifest.capabilities.includes('source.graph')) {
     plugin.getGraphSources = () => graphSources;
+  }
+  if (descriptor.providers.system > 0) {
+    const providers: PluginSystemProvider[] = Array.from(
+      { length: descriptor.providers.system },
+      (_, providerIndex) => ({
+        listSystems: () =>
+          sandbox.request<PluginSystemDeclaration[]>({ type: 'listSystems', providerIndex }),
+      }),
+    );
+    plugin.getSystemProviders = () => providers;
+  }
+  if (descriptor.connectionProviders.length > 0) {
+    const providers: PluginConnectionProvider[] = descriptor.connectionProviders.map(
+      (declaration, providerIndex) => ({
+        describe: () => declaration,
+        listConnections: () =>
+          sandbox.request<PluginConnectionDeclaration[]>({
+            type: 'listConnections',
+            providerIndex,
+          }),
+        addConnection: (input) =>
+          sandbox.request<void>({ type: 'addConnection', providerIndex, input }),
+        removeConnection: (connectionId) =>
+          sandbox.request<void>({ type: 'removeConnection', providerIndex, connectionId }),
+        refreshConnections: () =>
+          sandbox.request<void>({ type: 'refreshConnections', providerIndex }),
+      }),
+    );
+    plugin.getConnectionProviders = () => providers;
+  }
+  if (descriptor.providers.action > 0) {
+    const providers: EntityActionProvider[] = Array.from(
+      { length: descriptor.providers.action },
+      (_, providerIndex) => ({
+        canHandle: (ref) => canHandleEntity('action', providerIndex, ref),
+        listActions: (ref) =>
+          sandbox.request<EntityActionDeclaration[]>({
+            type: 'listEntityActions',
+            providerIndex,
+            ref,
+          }),
+        runAction: (ref, actionId, input) =>
+          sandbox.request<EntityActionResult>({
+            type: 'runEntityAction',
+            providerIndex,
+            ref,
+            actionId,
+            input,
+          }),
+      }),
+    );
+    plugin.getActionProviders = () => providers;
+  }
+  if (descriptor.providers.metricAnalysis > 0) {
+    const providers: MetricAnalysisProvider[] = Array.from(
+      { length: descriptor.providers.metricAnalysis },
+      (_, providerIndex) => ({
+        canHandle: (ref) => canHandleEntity('metricAnalysis', providerIndex, ref),
+        analyze: (sample) =>
+          sandbox.request<MetricAnalysisResult | null>({
+            type: 'analyzeMetric',
+            providerIndex,
+            sample,
+          }),
+      }),
+    );
+    plugin.getMetricAnalysisProviders = () => providers;
+  }
+  if (descriptor.providers.stats > 0) {
+    const providers: EntityStatsProvider[] = Array.from(
+      { length: descriptor.providers.stats },
+      (_, providerIndex) => ({
+        canHandle: (ref) => canHandleEntity('stats', providerIndex, ref),
+        getStats: (ref) =>
+          sandbox.request<ContainerStats>({ type: 'getStats', providerIndex, ref }),
+      }),
+    );
+    plugin.getStatsProviders = () => providers;
+  }
+  if (descriptor.providers.logs > 0) {
+    const providers: EntityLogsProvider[] = Array.from(
+      { length: descriptor.providers.logs },
+      (_, providerIndex) => ({
+        canHandle: (ref) => canHandleEntity('logs', providerIndex, ref),
+        getLogs: (ref, requestOptions) =>
+          sandbox.request<string>({
+            type: 'getLogs',
+            providerIndex,
+            ref,
+            options: requestOptions,
+          }),
+      }),
+    );
+    plugin.getLogsProviders = () => providers;
+  }
+  if (descriptor.providers.logStream > 0) {
+    const providers: EntityLogStreamProvider[] = Array.from(
+      { length: descriptor.providers.logStream },
+      (_, providerIndex) => ({
+        canHandle: (ref) => canHandleEntity('logStream', providerIndex, ref),
+        streamLogs: (ref, onData, onError) =>
+          sandbox.openStream(
+            (streamId) => ({ type: 'startLogStream', providerIndex, ref, streamId }),
+            {
+              onData: (data) => {
+                if (typeof data === 'string') {
+                  onData(data);
+                }
+              },
+              onError: (error) => onError?.(error),
+              onEnd: () => {},
+            },
+          ),
+      }),
+    );
+    plugin.getLogStreamProviders = () => providers;
+  }
+  if (descriptor.providers.lifecycle > 0) {
+    const providers: EntityLifecycleProvider[] = Array.from(
+      { length: descriptor.providers.lifecycle },
+      (_, providerIndex) => ({
+        canHandle: (ref) => canHandleEntity('lifecycle', providerIndex, ref),
+        runLifecycleAction: (ref, action) =>
+          sandbox.request<void>({ type: 'runLifecycleAction', providerIndex, ref, action }),
+        removeEntity: (ref, requestOptions) =>
+          sandbox.request<void>({
+            type: 'removeEntity',
+            providerIndex,
+            ref,
+            options: requestOptions,
+          }),
+      }),
+    );
+    plugin.getLifecycleProviders = () => providers;
+  }
+  if (descriptor.providers.inspect > 0) {
+    const providers: EntityInspectProvider[] = Array.from(
+      { length: descriptor.providers.inspect },
+      (_, providerIndex) => ({
+        canHandle: (ref) => canHandleEntity('inspect', providerIndex, ref),
+        inspect: (ref) =>
+          sandbox.request<ContainerInspect>({ type: 'inspect', providerIndex, ref }),
+      }),
+    );
+    plugin.getInspectProviders = () => providers;
+  }
+  if (descriptor.providers.filesystem > 0) {
+    const providers: EntityFilesystemProvider[] = Array.from(
+      { length: descriptor.providers.filesystem },
+      (_, providerIndex) => ({
+        canHandle: (ref) => canHandleEntity('filesystem', providerIndex, ref),
+        getTop: (ref) =>
+          sandbox.request<ContainerTopResult>({ type: 'getTop', providerIndex, ref }),
+        getDiff: (ref) =>
+          sandbox.request<ContainerDiffEntry[]>({ type: 'getDiff', providerIndex, ref }),
+      }),
+    );
+    plugin.getFilesystemProviders = () => providers;
+  }
+  if (descriptor.providers.diagnostic > 0) {
+    const providers: EntityDiagnosticProvider[] = Array.from(
+      { length: descriptor.providers.diagnostic },
+      (_, providerIndex) => ({
+        canHandle: (ref) => canHandleEntity('diagnostic', providerIndex, ref),
+        diagnose: (ref) =>
+          sandbox.request<CrashDiagnostic | null>({ type: 'diagnose', providerIndex, ref }),
+      }),
+    );
+    plugin.getDiagnosticProviders = () => providers;
+  }
+  if (descriptor.providers.exec > 0) {
+    const providers: EntityExecProvider[] = Array.from(
+      { length: descriptor.providers.exec },
+      (_, providerIndex) => ({
+        canHandle: (ref) => canHandleEntity('exec', providerIndex, ref),
+        createExecSession: (ref, command) => sandbox.openExecSession(providerIndex, ref, command),
+      }),
+    );
+    plugin.getExecProviders = () => providers;
+  }
+  if (descriptor.providers.project > 0) {
+    const providers: ProjectProvider[] = Array.from(
+      { length: descriptor.providers.project },
+      (_, providerIndex) => ({
+        id: String(providerIndex),
+        canHandle: (project) =>
+          sandbox.request<boolean>({ type: 'canHandleProject', providerIndex, project }),
+        listProjects: () =>
+          sandbox.request<ProjectSummary[]>({ type: 'listProjects', providerIndex }),
+        runProjectAction: (project, action) =>
+          sandbox.request<string>({
+            type: 'runProjectAction',
+            providerIndex,
+            project,
+            action,
+          }),
+      }),
+    );
+    plugin.getProjectProviders = () => providers;
+  }
+  if (descriptor.providers.resource > 0) {
+    const providers: ResourceProvider[] = Array.from(
+      { length: descriptor.providers.resource },
+      (_, providerIndex) => ({
+        canHandle: (resourceId) =>
+          sandbox.request<boolean>({ type: 'canHandleResource', providerIndex, resourceId }),
+        getResourceLogs: (resourceId, requestOptions) =>
+          sandbox.request<string>({
+            type: 'getResourceLogs',
+            providerIndex,
+            resourceId,
+            options: requestOptions,
+          }),
+        runResourceAction: (resourceId, action, requestOptions) =>
+          sandbox.request<void>({
+            type: 'runResourceAction',
+            providerIndex,
+            resourceId,
+            action,
+            options: requestOptions,
+          }),
+      }),
+    );
+    plugin.getResourceProviders = () => providers;
   }
   return plugin;
 }
@@ -271,6 +596,7 @@ export async function loadExternalPlugins(
   const plugins: DockscopePlugin[] = [];
   const configs = new Map<string, PluginConfig>();
   const errors: PluginLoadError[] = [];
+  const warnings: PluginLoadWarning[] = [];
   const policy = allowedPermissionSet(options.permissions);
   const logger = options.logger ?? console;
 
@@ -279,8 +605,14 @@ export async function loadExternalPlugins(
     let manifestId: string | undefined;
     try {
       const rawManifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as unknown;
-      const manifest = validatePluginManifest(rawManifest);
+      const validation = validatePluginManifestWithWarnings(rawManifest);
+      const manifest = validation.manifest;
       manifestId = manifest.id;
+      for (const warning of validation.warnings) {
+        const loadWarning = { ...warning, id: manifest.id, path: manifestPath };
+        warnings.push(loadWarning);
+        logger.warn(`Plugin manifest warning (${manifest.id}): ${warning.message}`);
+      }
       const denied = deniedPermissions(manifest, policy);
       if (denied.length > 0) {
         phase = 'permission';
@@ -293,18 +625,32 @@ export async function loadExternalPlugins(
         : defaultPluginConfig(manifest.config);
       phase = 'load';
       const entryPath = resolvePluginEntry(manifestPath, manifest);
+      const frontendEntry = resolvePluginFrontendEntry(manifestPath, manifest);
+      if (frontendEntry && !(await pathExists(frontendEntry))) {
+        throw new Error(`Plugin frontend entry does not exist: ${frontendEntry}`);
+      }
       const pluginDir = path.dirname(manifestPath);
-      if (manifest.execution?.isolation === 'process') {
+      if (manifest.execution?.isolation !== 'in-process') {
         plugins.push(
-          await createProcessIsolatedPlugin({
-            manifest,
-            pluginDir,
-            entryPath,
-            config,
-            publishEvent: options.publishEvent,
-            timeoutMs: manifest.execution.commandTimeoutMs ?? options.processCommandTimeoutMs,
-            maxStderrBytes: manifest.execution.maxStderrBytes ?? options.processMaxStderrBytes,
-          }),
+          withFrontendBundle(
+            await createProcessIsolatedPlugin({
+              manifest,
+              pluginDir,
+              entryPath,
+              config,
+              secretStore: options.secretStore,
+              publishEvent: options.publishEvent,
+              timeoutMs:
+                manifest.execution?.operationTimeoutMs ??
+                manifest.execution?.commandTimeoutMs ??
+                options.processCommandTimeoutMs,
+              maxStderrBytes: manifest.execution?.maxStderrBytes ?? options.processMaxStderrBytes,
+              memoryLimitMb: manifest.execution?.memoryLimitMb ?? options.processMemoryLimitMb,
+              logger,
+              onRuntimeCrash: options.onRuntimeCrash,
+            }),
+            frontendEntry,
+          ),
         );
         configs.set(manifest.id, config);
         continue;
@@ -325,7 +671,12 @@ export async function loadExternalPlugins(
           ? (type, payload) => options.publishEvent!(manifest.id, type, payload)
           : undefined,
       });
-      plugins.push(await instantiatePlugin(module, manifest, pluginDir, config, host, logger));
+      plugins.push(
+        withFrontendBundle(
+          await instantiatePlugin(module, manifest, pluginDir, config, host, logger),
+          frontendEntry,
+        ),
+      );
       configs.set(manifest.id, config);
     } catch (error) {
       errors.push({
@@ -337,7 +688,7 @@ export async function loadExternalPlugins(
     }
   }
 
-  return { plugins, configs, errors };
+  return { plugins, configs, errors, warnings };
 }
 
 export async function validateExternalPluginManifests(options: {
@@ -346,6 +697,7 @@ export async function validateExternalPluginManifests(options: {
 }): Promise<ExternalPluginManifestValidationResult> {
   const manifests: PluginManifest[] = [];
   const errors: PluginLoadError[] = [];
+  const warnings: PluginLoadWarning[] = [];
   const policy = allowedPermissionSet(options.permissions);
 
   for (const manifestPath of await discoverManifestPaths(options.paths)) {
@@ -353,8 +705,16 @@ export async function validateExternalPluginManifests(options: {
     let manifestId: string | undefined;
     try {
       const rawManifest = JSON.parse(await readFile(manifestPath, 'utf-8')) as unknown;
-      const manifest = validatePluginManifest(rawManifest);
+      const validation = validatePluginManifestWithWarnings(rawManifest);
+      const manifest = validation.manifest;
       manifestId = manifest.id;
+      warnings.push(
+        ...validation.warnings.map((warning) => ({
+          ...warning,
+          id: manifest.id,
+          path: manifestPath,
+        })),
+      );
       const denied = deniedPermissions(manifest, policy);
       if (denied.length > 0) {
         phase = 'permission';
@@ -364,6 +724,10 @@ export async function validateExternalPluginManifests(options: {
       const entryPath = resolvePluginEntry(manifestPath, manifest);
       if (!(await pathExists(entryPath))) {
         throw new Error(`Plugin entry does not exist: ${entryPath}`);
+      }
+      const frontendEntry = resolvePluginFrontendEntry(manifestPath, manifest);
+      if (frontendEntry && !(await pathExists(frontendEntry))) {
+        throw new Error(`Plugin frontend entry does not exist: ${frontendEntry}`);
       }
       manifests.push(manifest);
     } catch (error) {
@@ -376,7 +740,7 @@ export async function validateExternalPluginManifests(options: {
     }
   }
 
-  return { manifests, errors };
+  return { manifests, errors, warnings };
 }
 
 export async function loadExternalPluginsFromEnv(
@@ -389,11 +753,13 @@ export async function loadExternalPluginsFromEnv(
     | 'cacheBust'
     | 'processCommandTimeoutMs'
     | 'processMaxStderrBytes'
+    | 'processMemoryLimitMb'
     | 'logger'
+    | 'onRuntimeCrash'
   > = {},
 ): Promise<ExternalPluginLoadResult> {
   if (env.DOCKSCOPE_DISABLE_EXTERNAL_PLUGINS === '1') {
-    return { plugins: [], configs: new Map(), errors: [] };
+    return { plugins: [], configs: new Map(), errors: [], warnings: [] };
   }
   return loadExternalPlugins({
     paths: parsePluginPaths(env.DOCKSCOPE_PLUGIN_PATHS),
