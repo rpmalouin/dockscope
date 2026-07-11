@@ -3,15 +3,16 @@ import { mkdir, mkdtemp, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
-import { PluginRegistry } from '../../core/plugins';
+import { PluginRegistry, type PluginManifest } from '../../core/plugins';
 import { PLUGIN_CATALOG_FORMAT, signPluginCatalogFile } from '../catalog';
 import { listInstalledPlugins } from '../install';
+import { installedPermissionGrants } from '../internal';
 import { createPluginMarketplaceService } from '../marketplace';
 import { createPluginPackageFromPath } from '../package';
 import { OFFICIAL_PLUGIN_CATALOG_NAME } from '../catalogConfig';
 
 async function createPluginDir(
-  options: { version?: string; moduleSource?: string } = {},
+  options: { version?: string; moduleSource?: string; permissions?: string[] } = {},
 ): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), 'dockscope-marketplace-plugin-'));
   const pluginDir = path.join(root, 'plugin');
@@ -25,7 +26,7 @@ async function createPluginDir(
       dockscopeApiVersion: '1',
       entry: './plugin.mjs',
       capabilities: ['ui.command'],
-      permissions: [],
+      permissions: options.permissions ?? [],
       commands: [{ id: 'hello', title: 'Hello' }],
     }),
     'utf-8',
@@ -47,6 +48,7 @@ async function writeSignedCatalog(options: {
   publicKey: string;
   privateKey: string;
   compatibility?: { minDockscopeVersion?: string; maxDockscopeVersion?: string };
+  permissions?: string[];
 }): Promise<void> {
   await writeFile(
     options.catalogPath,
@@ -66,7 +68,7 @@ async function writeSignedCatalog(options: {
               minDockscopeVersion: '0.7.0',
             },
             capabilities: ['ui.command'],
-            permissions: [],
+            permissions: options.permissions ?? [],
             packageUrl: `./${path.basename(options.packagePath)}`,
             packageSha256: options.packageSha256,
             signature: {
@@ -159,6 +161,109 @@ describe('plugin marketplace', () => {
       entries: [{ id: 'marketplace.demo', state: 'available' }],
     });
     expect(registry.listPlugins()).toEqual([]);
+  });
+
+  it('grants reviewed catalog permissions on install without a global permission policy', async () => {
+    const pluginDir = await createPluginDir({ permissions: ['network.http', 'process.exec'] });
+    const outputDir = await mkdtemp(path.join(tmpdir(), 'dockscope-marketplace-grants-'));
+    const packagePath = path.join(outputDir, 'marketplace-demo.dockscope-plugin');
+    const registryDir = path.join(outputDir, 'registry');
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const bundle = await createPluginPackageFromPath({
+      sourcePath: pluginDir,
+      outFile: packagePath,
+      privateKey: privateKeyPem,
+      keyId: 'test-key',
+    });
+    const catalogPath = path.join(outputDir, 'catalog.json');
+    await writeSignedCatalog({
+      catalogPath,
+      packagePath,
+      packageSha256: bundle.sha256,
+      version: '1.0.0',
+      publicKey: publicKeyPem,
+      privateKey: privateKeyPem,
+      permissions: ['network.http', 'process.exec'],
+    });
+    const registry = new PluginRegistry();
+    const env = {
+      DOCKSCOPE_PLUGIN_CATALOG: catalogPath,
+      DOCKSCOPE_PLUGIN_CATALOG_PUBLIC_KEY: publicKeyPem,
+      DOCKSCOPE_PLUGIN_REGISTRY: registryDir,
+      DOCKSCOPE_PLUGIN_CONFIG: path.join(outputDir, 'config.json'),
+      DOCKSCOPE_PLUGIN_STATE: path.join(outputDir, 'state.json'),
+      DOCKSCOPE_PLUGIN_SECRETS: path.join(outputDir, 'secrets.json'),
+    };
+    const service = createPluginMarketplaceService(env, registry);
+
+    await service.install('marketplace.demo');
+
+    expect(registry.listPlugins()).toEqual([
+      expect.objectContaining({
+        manifest: expect.objectContaining({ id: 'marketplace.demo' }),
+        status: 'started',
+      }),
+    ]);
+    const installed = await listInstalledPlugins(registryDir);
+    expect(installed).toMatchObject([
+      { id: 'marketplace.demo', grantedPermissions: ['network.http', 'process.exec'] },
+    ]);
+
+    // A restarting server resolves the same grants from the install registry,
+    // scoped to the installed directory only.
+    const grants = await installedPermissionGrants(env);
+    const manifest = { id: 'marketplace.demo' } as unknown as PluginManifest;
+    expect(grants(manifest, path.join(installed[0].path, 'plugin.json'))).toEqual([
+      'network.http',
+      'process.exec',
+    ]);
+    expect(grants(manifest, path.join(outputDir, 'plugin.json'))).toEqual([]);
+  });
+
+  it('refuses to install a package needing permissions the catalog did not declare', async () => {
+    const pluginDir = await createPluginDir({ permissions: ['network.http', 'process.exec'] });
+    const outputDir = await mkdtemp(path.join(tmpdir(), 'dockscope-marketplace-excess-'));
+    const packagePath = path.join(outputDir, 'marketplace-demo.dockscope-plugin');
+    const registryDir = path.join(outputDir, 'registry');
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const bundle = await createPluginPackageFromPath({
+      sourcePath: pluginDir,
+      outFile: packagePath,
+      privateKey: privateKeyPem,
+      keyId: 'test-key',
+    });
+    const catalogPath = path.join(outputDir, 'catalog.json');
+    await writeSignedCatalog({
+      catalogPath,
+      packagePath,
+      packageSha256: bundle.sha256,
+      version: '1.0.0',
+      publicKey: publicKeyPem,
+      privateKey: privateKeyPem,
+      permissions: ['network.http'],
+    });
+    const registry = new PluginRegistry();
+    const service = createPluginMarketplaceService(
+      {
+        DOCKSCOPE_PLUGIN_CATALOG: catalogPath,
+        DOCKSCOPE_PLUGIN_CATALOG_PUBLIC_KEY: publicKeyPem,
+        DOCKSCOPE_PLUGIN_REGISTRY: registryDir,
+        DOCKSCOPE_PLUGIN_CONFIG: path.join(outputDir, 'config.json'),
+        DOCKSCOPE_PLUGIN_STATE: path.join(outputDir, 'state.json'),
+        DOCKSCOPE_PLUGIN_SECRETS: path.join(outputDir, 'secrets.json'),
+      },
+      registry,
+    );
+
+    await expect(service.install('marketplace.demo')).rejects.toThrow(
+      'Plugin requires disallowed permissions: process.exec',
+    );
+    expect(registry.listPlugins()).toEqual([]);
+    await expect(listInstalledPlugins(registryDir)).resolves.toEqual([]);
   });
 
   it('blocks incompatible catalog plugins before install', async () => {

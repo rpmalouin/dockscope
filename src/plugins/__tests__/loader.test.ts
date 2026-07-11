@@ -196,6 +196,43 @@ describe('external plugin loader', () => {
     ]);
   });
 
+  it('loads plugins whose permissions were granted at install time', async () => {
+    const pluginDir = await createPluginDir();
+    await writePlugin(
+      pluginDir,
+      manifest({
+        permissions: ['network.http', 'process.exec'],
+        execution: { isolation: 'in-process' },
+      }),
+      `export default function createPlugin({ manifest }) { return { manifest }; }`,
+    );
+
+    const granted = await loadExternalPlugins({
+      paths: [pluginDir],
+      permissions: [],
+      grantedPermissions: () => ['network.http', 'process.exec'],
+    });
+
+    expect(granted.errors).toEqual([]);
+    expect(granted.plugins).toHaveLength(1);
+
+    const partiallyGranted = await loadExternalPlugins({
+      paths: [pluginDir],
+      permissions: [],
+      grantedPermissions: () => ['network.http'],
+      cacheBust: true,
+    });
+
+    expect(partiallyGranted.plugins).toEqual([]);
+    expect(partiallyGranted.errors).toEqual([
+      expect.objectContaining({
+        id: 'external.demo',
+        phase: 'permission',
+        message: 'Plugin requires disallowed permissions: process.exec',
+      }),
+    ]);
+  });
+
   it('reports invalid manifests as manifest load errors', async () => {
     const pluginDir = await createPluginDir();
     await writePlugin(

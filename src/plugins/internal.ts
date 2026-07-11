@@ -1,3 +1,4 @@
+import path from 'path';
 import { PluginRegistry } from '../core/plugins.js';
 import { createComposePlugin } from '../docker/composePlugin.js';
 import { createDockerPlugin } from '../docker/plugin.js';
@@ -5,9 +6,30 @@ import { createAnomalyPlugin } from '../server/anomalyPlugin.js';
 import { createPluginApprovalStoreFromEnv } from './approvalStore.js';
 import { createPluginConfigStoreFromEnv } from './configStore.js';
 import { createPluginEventStoreFromEnv } from './eventStore.js';
-import { loadExternalPluginsFromEnv } from './loader.js';
+import { defaultPluginRegistryDir, listInstalledPlugins } from './install.js';
+import { loadExternalPluginsFromEnv, type ExternalPluginPermissionGrants } from './loader.js';
 import { createPluginSecretStoreFromEnv } from './secretStore.js';
 import { createPluginStateStoreFromEnv } from './stateStore.js';
+
+/**
+ * Permissions granted when a plugin was installed into the local registry.
+ * Grants only apply to the exact installed directory, so a same-id plugin
+ * loaded from another --plugins path does not inherit them.
+ */
+export async function installedPermissionGrants(
+  env: NodeJS.ProcessEnv,
+): Promise<ExternalPluginPermissionGrants> {
+  const registryDir = env.DOCKSCOPE_PLUGIN_REGISTRY || defaultPluginRegistryDir();
+  try {
+    const installed = await listInstalledPlugins(registryDir);
+    const byPath = new Map(
+      installed.map((plugin) => [path.resolve(plugin.path), plugin.grantedPermissions]),
+    );
+    return (_manifest, manifestPath) => byPath.get(path.resolve(path.dirname(manifestPath))) ?? [];
+  } catch {
+    return () => [];
+  }
+}
 
 export function createInternalPluginRegistry(registry = new PluginRegistry()): PluginRegistry {
   registry.register(createDockerPlugin());
@@ -37,6 +59,7 @@ export async function createPluginRegistry(
   );
   const external = await loadExternalPluginsFromEnv(env, {
     getConfig: (manifest) => configStore.load(manifest.id, manifest.config),
+    grantedPermissions: await installedPermissionGrants(env),
     secretStore,
     publishEvent: (pluginId, type, payload) => registry.publishPluginEvent(pluginId, type, payload),
     onRuntimeCrash: (pluginId, crash) => registry.recordRuntimeCrash(pluginId, crash),
@@ -64,6 +87,7 @@ export async function createPluginRegistry(
   registry.setReloadHandler(async (pluginId) => {
     const reloaded = await loadExternalPluginsFromEnv(env, {
       getConfig: (manifest) => configStore.load(manifest.id, manifest.config),
+      grantedPermissions: await installedPermissionGrants(env),
       secretStore,
       publishEvent: (reloadedPluginId, type, payload) =>
         registry.publishPluginEvent(reloadedPluginId, type, payload),

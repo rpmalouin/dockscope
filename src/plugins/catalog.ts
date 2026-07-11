@@ -756,11 +756,14 @@ export async function installPluginFromCatalog(options: {
     ) {
       throw new PluginCatalogError(`Plugin catalog package key id mismatch: ${entry.id}`);
     }
+    // Grant only what the catalog entry declared (and the user reviewed): if the
+    // package manifest asks for more, loading fails naming the extra permissions.
     const installed = await installPluginFromPath({
       sourcePath: packagePath,
       source: entry.resolvedPackageUrl,
       registryDir: options.registryDir,
       publicKey: packagePublicKey,
+      grantedPermissions: entry.permissions,
     });
     if (installed.id !== entry.id || installed.version !== entry.version) {
       throw new PluginCatalogError(

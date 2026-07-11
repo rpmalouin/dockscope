@@ -4,6 +4,7 @@ import path from 'path';
 import { validateExternalPluginManifests } from './loader.js';
 import { extractPluginPackage, isPluginPackageFile, verifyPluginPackage } from './package.js';
 import type { PluginManifest } from '../core/plugins.js';
+import { isPluginPermission, type PluginPermission } from '../core/capabilities.js';
 
 const INSTALL_INDEX = 'installed.json';
 
@@ -19,6 +20,7 @@ export interface InstalledPlugin {
   packageSha256?: string;
   signatureAlgorithm?: string;
   signatureVerified?: boolean;
+  grantedPermissions: PluginPermission[];
   path: string;
 }
 
@@ -32,6 +34,11 @@ export interface InstallPluginOptions {
   registryDir?: string;
   signingKey?: string;
   publicKey?: string;
+  /**
+   * Permissions granted by the user for this install. Defaults to the manifest's
+   * declared permissions — installing a plugin is the consent step.
+   */
+  grantedPermissions?: readonly PluginPermission[];
 }
 
 async function withRegistryTransaction<T>(
@@ -69,6 +76,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function grantedPermissionList(value: unknown): PluginPermission[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(value.filter(isPluginPermission))];
 }
 
 function parseInstalledPluginIndex(raw: unknown, registryDir: string): InstalledPluginIndex {
@@ -120,6 +134,7 @@ function parseInstalledPluginIndex(raw: unknown, registryDir: string): Installed
       signatureAlgorithm: optionalString(value.signatureAlgorithm),
       signatureVerified:
         typeof value.signatureVerified === 'boolean' ? value.signatureVerified : undefined,
+      grantedPermissions: grantedPermissionList(value.grantedPermissions),
       path: installDir(registryDir, pluginId),
     };
   }
@@ -235,6 +250,7 @@ async function installPluginFromPathUnlocked(
     packageSha256: verifiedPackage?.bundle.sha256,
     signatureAlgorithm: verifiedPackage?.bundle.signature?.algorithm,
     signatureVerified: verifiedPackage?.signatureVerified,
+    grantedPermissions: grantedPermissionList(options.grantedPermissions ?? manifest.permissions),
     path: targetDir,
   };
   await mkdir(registryDir, { recursive: true });

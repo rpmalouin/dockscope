@@ -1397,6 +1397,12 @@
             </div>
           </div>
 
+          {#if marketplaceReview.action !== 'uninstall' && marketplaceReview.entry.permissions.length > 0}
+            <div class="grant-note">
+              Confirming grants this plugin: {listText(marketplaceReview.entry.permissions)}
+            </div>
+          {/if}
+
           {#if marketplaceReview.entry.releaseNotes}
             <div class="release-notes">{marketplaceReview.entry.releaseNotes}</div>
           {/if}
@@ -1824,6 +1830,16 @@
 
   .marketplace-review-grid {
     margin-top: 14px;
+  }
+
+  .grant-note {
+    margin-top: 12px;
+    padding: 10px;
+    border-left: 2px solid rgba(255, 190, 64, 0.5);
+    background: rgba(255, 190, 64, 0.06);
+    color: rgba(226, 232, 240, 0.82);
+    font-size: 11px;
+    line-height: 1.5;
   }
 
   .release-notes {

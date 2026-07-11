@@ -57,9 +57,16 @@ type ExternalPluginModule = Record<string, unknown>;
 
 export type ExternalPluginPermissionPolicy = 'all' | readonly PluginPermission[];
 
+export type ExternalPluginPermissionGrants = (
+  manifest: PluginManifest,
+  manifestPath: string,
+) => readonly PluginPermission[];
+
 export interface ExternalPluginLoadOptions {
   paths: readonly string[];
   permissions?: ExternalPluginPermissionPolicy;
+  /** Per-plugin permission grants (e.g. recorded at install time), unioned with `permissions`. */
+  grantedPermissions?: ExternalPluginPermissionGrants;
   getConfig?: (manifest: PluginManifest) => PluginConfig | Promise<PluginConfig>;
   secretStore?: PluginSecretStore;
   publishEvent?: (
@@ -100,11 +107,14 @@ function allowedPermissionSet(
 function deniedPermissions(
   manifest: PluginManifest,
   policy: Set<PluginPermission> | 'all',
+  granted: readonly PluginPermission[] = [],
 ): PluginPermission[] {
   if (policy === 'all') {
     return [];
   }
-  return manifest.permissions.filter((permission) => !policy.has(permission));
+  return manifest.permissions.filter(
+    (permission) => !policy.has(permission) && !granted.includes(permission),
+  );
 }
 
 export function parsePluginPermissionList(
@@ -613,7 +623,11 @@ export async function loadExternalPlugins(
         warnings.push(loadWarning);
         logger.warn(`Plugin manifest warning (${manifest.id}): ${warning.message}`);
       }
-      const denied = deniedPermissions(manifest, policy);
+      const denied = deniedPermissions(
+        manifest,
+        policy,
+        options.grantedPermissions?.(manifest, manifestPath),
+      );
       if (denied.length > 0) {
         phase = 'permission';
         throw new Error(`Plugin requires disallowed permissions: ${denied.join(', ')}`);
@@ -694,6 +708,7 @@ export async function loadExternalPlugins(
 export async function validateExternalPluginManifests(options: {
   paths: readonly string[];
   permissions?: ExternalPluginPermissionPolicy;
+  grantedPermissions?: ExternalPluginPermissionGrants;
 }): Promise<ExternalPluginManifestValidationResult> {
   const manifests: PluginManifest[] = [];
   const errors: PluginLoadError[] = [];
@@ -715,7 +730,11 @@ export async function validateExternalPluginManifests(options: {
           path: manifestPath,
         })),
       );
-      const denied = deniedPermissions(manifest, policy);
+      const denied = deniedPermissions(
+        manifest,
+        policy,
+        options.grantedPermissions?.(manifest, manifestPath),
+      );
       if (denied.length > 0) {
         phase = 'permission';
         throw new Error(`Plugin requires disallowed permissions: ${denied.join(', ')}`);
@@ -748,6 +767,7 @@ export async function loadExternalPluginsFromEnv(
   options: Pick<
     ExternalPluginLoadOptions,
     | 'getConfig'
+    | 'grantedPermissions'
     | 'secretStore'
     | 'publishEvent'
     | 'cacheBust'

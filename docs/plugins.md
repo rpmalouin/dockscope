@@ -145,7 +145,7 @@ dockscope plugin:uninstall example.plugin
 dockscope plugin:catalog:install example.plugin --catalog ./plugin-catalog.json
 ```
 
-Installed plugins are copied into `~/.dockscope/plugins` by default and are loaded automatically on `dockscope up`. Use `--plugin-registry` or `DOCKSCOPE_PLUGIN_REGISTRY` to point DockScope at another local registry:
+Installed plugins are copied into `~/.dockscope/plugins` by default and are loaded automatically on `dockscope up`. Installing also grants the plugin its reviewed permissions, so installed plugins load without a `--plugin-permissions` policy (see [Permissions](#permissions)). Use `--plugin-registry` or `DOCKSCOPE_PLUGIN_REGISTRY` to point DockScope at another local registry:
 
 ```bash
 dockscope up --plugin-registry ./installed-plugins --plugin-permissions all
@@ -678,7 +678,9 @@ export default definePluginFactory(({ manifest }) => ({ manifest }));
 
 ## Permissions
 
-External plugin code is imported only after manifest permissions pass policy checks. Use `--plugin-permissions all` during development, then narrow the list for normal usage.
+External plugin code is imported only after manifest permissions pass policy checks. A permission passes when it is either in the global `--plugin-permissions` / `DOCKSCOPE_PLUGIN_PERMISSIONS` policy or was granted when the plugin was installed.
+
+Installing a plugin is the consent step: `plugin:install` grants the manifest's declared permissions, and marketplace installs grant the permissions listed in the catalog entry, which are the ones shown in the install review dialog. If the downloaded package asks for more than the catalog declared, loading fails and names the extra permissions. Grants are recorded in the registry's `installed.json`, apply only to the installed plugin directory, and are removed on uninstall. Plugins loaded from `--plugins` paths were never installed, so they rely on the global policy alone; use `--plugin-permissions all` during development.
 
 Plugin factories receive a restricted `host` API. Host helpers check the plugin's declared permissions at runtime:
 

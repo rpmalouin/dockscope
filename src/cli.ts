@@ -707,6 +707,9 @@ program
     if (installed.packageSha256) {
       console.log(`  package ${installed.packageSha256}`);
     }
+    if (installed.grantedPermissions.length > 0) {
+      console.log(`  granted ${installed.grantedPermissions.join(', ')}`);
+    }
     console.log(`  path ${installed.path}`);
   });
 
@@ -817,6 +820,9 @@ program
     if (installed.packageSha256) {
       console.log(`  package ${installed.packageSha256}`);
     }
+    if (installed.grantedPermissions.length > 0) {
+      console.log(`  granted ${installed.grantedPermissions.join(', ')}`);
+    }
     console.log(`  path ${installed.path}`);
   });
 
@@ -856,6 +862,9 @@ program
       await readOptionalTextFile(opts.publicKey),
     );
     console.log(`  updated ${updated.id} v${updated.version}`);
+    if (updated.grantedPermissions.length > 0) {
+      console.log(`  granted ${updated.grantedPermissions.join(', ')}`);
+    }
   });
 
 program

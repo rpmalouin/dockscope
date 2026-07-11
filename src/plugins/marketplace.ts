@@ -427,6 +427,7 @@ export class PluginMarketplaceService {
     const loaded = await loadExternalPlugins({
       paths: [installed.path],
       permissions: parsePluginPermissionList(this.env.DOCKSCOPE_PLUGIN_PERMISSIONS),
+      grantedPermissions: () => installed.grantedPermissions,
       getConfig: (manifest) => this.configStore.load(manifest.id, manifest.config),
       secretStore: this.secretStore,
       publishEvent: (pluginId, type, payload) =>

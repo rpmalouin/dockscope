@@ -4,7 +4,11 @@ import path from 'path';
 import { describe, expect, it } from 'vitest';
 import { installPluginFromPath, listInstalledPlugins, uninstallPlugin } from '../install';
 
-async function createPluginDir(version: string, id = 'install.demo'): Promise<string> {
+async function createPluginDir(
+  version: string,
+  id = 'install.demo',
+  permissions: string[] = [],
+): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), 'dockscope-install-source-'));
   const pluginDir = path.join(root, 'plugin');
   await mkdir(pluginDir);
@@ -17,7 +21,7 @@ async function createPluginDir(version: string, id = 'install.demo'): Promise<st
       dockscopeApiVersion: '1',
       entry: './plugin.mjs',
       capabilities: ['ui.command'],
-      permissions: [],
+      permissions,
       commands: [{ id: 'hello', title: 'Hello' }],
     }),
     'utf-8',
@@ -49,6 +53,28 @@ describe('plugin installation', () => {
       readFile(path.join(registryDir, 'install.demo', 'plugin.json'), 'utf-8'),
     ).resolves.toContain('1.1.0');
     expect((await readdir(registryDir)).some((entry) => entry.startsWith('.install-'))).toBe(false);
+  });
+
+  it('records granted permissions at install time and honors explicit grants', async () => {
+    const registryDir = await mkdtemp(path.join(tmpdir(), 'dockscope-install-grants-'));
+    await installPluginFromPath({
+      sourcePath: await createPluginDir('1.0.0', 'install.demo', ['network.http', 'process.exec']),
+      registryDir,
+    });
+
+    await expect(listInstalledPlugins(registryDir)).resolves.toMatchObject([
+      { id: 'install.demo', grantedPermissions: ['network.http', 'process.exec'] },
+    ]);
+
+    await installPluginFromPath({
+      sourcePath: await createPluginDir('1.1.0', 'install.demo', ['network.http', 'process.exec']),
+      registryDir,
+      grantedPermissions: ['network.http'],
+    });
+
+    await expect(listInstalledPlugins(registryDir)).resolves.toMatchObject([
+      { id: 'install.demo', version: '1.1.0', grantedPermissions: ['network.http'] },
+    ]);
   });
 
   it('serializes concurrent registry updates without losing index entries', async () => {
