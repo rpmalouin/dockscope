@@ -7,6 +7,7 @@ import { installPluginFromPath, type InstalledPlugin } from './install.js';
 import { MAX_PLUGIN_PACKAGE_BYTES, verifyPluginPackage } from './package.js';
 import type { PluginCapability, PluginPermission } from '../core/capabilities.js';
 import { isPluginCapability, isPluginPermission } from '../core/capabilities.js';
+import type { PluginManifest } from '../core/plugins.js';
 import {
   pluginCompatibilityWarnings,
   validatePluginCompatibility,
@@ -118,6 +119,32 @@ export class PluginCatalogError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PluginCatalogError';
+  }
+}
+
+function sameStringMembers(left: readonly string[], right: readonly string[]): boolean {
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return (
+    sortedLeft.length === sortedRight.length &&
+    sortedLeft.every((value, index) => value === sortedRight[index])
+  );
+}
+
+function assertCatalogEntryMatchesPackage(
+  entry: ResolvedPluginCatalogEntry,
+  manifest: PluginManifest,
+): void {
+  if (manifest.id !== entry.id || manifest.version !== entry.version) {
+    throw new PluginCatalogError(
+      `Plugin package ${manifest.id}@${manifest.version} does not match catalog ${entry.id}@${entry.version}`,
+    );
+  }
+  if (!sameStringMembers(manifest.capabilities, entry.capabilities)) {
+    throw new PluginCatalogError(`Plugin package capabilities do not match catalog: ${entry.id}`);
+  }
+  if (!sameStringMembers(manifest.permissions, entry.permissions)) {
+    throw new PluginCatalogError(`Plugin package permissions do not match catalog: ${entry.id}`);
   }
 }
 
@@ -756,8 +783,8 @@ export async function installPluginFromCatalog(options: {
     ) {
       throw new PluginCatalogError(`Plugin catalog package key id mismatch: ${entry.id}`);
     }
-    // Grant only what the catalog entry declared (and the user reviewed): if the
-    // package manifest asks for more, loading fails naming the extra permissions.
+    // The user reviewed catalog metadata, so verify the signed package declares exactly that.
+    assertCatalogEntryMatchesPackage(entry, verifiedPackage.bundle.manifest);
     const installed = await installPluginFromPath({
       sourcePath: packagePath,
       source: entry.resolvedPackageUrl,

@@ -4,15 +4,20 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
 import { PluginRegistry, type PluginManifest } from '../../core/plugins';
+import type { PluginPermission } from '../../core/capabilities';
 import { PLUGIN_CATALOG_FORMAT, signPluginCatalogFile } from '../catalog';
 import { listInstalledPlugins } from '../install';
-import { installedPermissionGrants } from '../internal';
+import { createPluginRegistry, installedPermissionGrants } from '../internal';
 import { createPluginMarketplaceService } from '../marketplace';
 import { createPluginPackageFromPath } from '../package';
 import { OFFICIAL_PLUGIN_CATALOG_NAME } from '../catalogConfig';
 
 async function createPluginDir(
-  options: { version?: string; moduleSource?: string; permissions?: string[] } = {},
+  options: {
+    version?: string;
+    moduleSource?: string;
+    permissions?: readonly PluginPermission[];
+  } = {},
 ): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), 'dockscope-marketplace-plugin-'));
   const pluginDir = path.join(root, 'plugin');
@@ -48,7 +53,7 @@ async function writeSignedCatalog(options: {
   publicKey: string;
   privateKey: string;
   compatibility?: { minDockscopeVersion?: string; maxDockscopeVersion?: string };
-  permissions?: string[];
+  permissions?: readonly PluginPermission[];
 }): Promise<void> {
   await writeFile(
     options.catalogPath,
@@ -192,9 +197,12 @@ describe('plugin marketplace', () => {
       DOCKSCOPE_PLUGIN_CATALOG: catalogPath,
       DOCKSCOPE_PLUGIN_CATALOG_PUBLIC_KEY: publicKeyPem,
       DOCKSCOPE_PLUGIN_REGISTRY: registryDir,
+      DOCKSCOPE_PLUGIN_PATHS: registryDir,
       DOCKSCOPE_PLUGIN_CONFIG: path.join(outputDir, 'config.json'),
       DOCKSCOPE_PLUGIN_STATE: path.join(outputDir, 'state.json'),
       DOCKSCOPE_PLUGIN_SECRETS: path.join(outputDir, 'secrets.json'),
+      DOCKSCOPE_PLUGIN_EVENTS: path.join(outputDir, 'events.json'),
+      DOCKSCOPE_PLUGIN_APPROVALS: path.join(outputDir, 'approvals.json'),
     };
     const service = createPluginMarketplaceService(env, registry);
 
@@ -220,6 +228,18 @@ describe('plugin marketplace', () => {
       'process.exec',
     ]);
     expect(grants(manifest, path.join(outputDir, 'plugin.json'))).toEqual([]);
+    const differentManifest = { id: 'marketplace.other' } as unknown as PluginManifest;
+    expect(grants(differentManifest, path.join(installed[0].path, 'plugin.json'))).toEqual([]);
+
+    const restartedRegistry = await createPluginRegistry(env);
+    expect(restartedRegistry.listPlugins()).toContainEqual(
+      expect.objectContaining({
+        manifest: expect.objectContaining({
+          id: 'marketplace.demo',
+          permissions: ['network.http', 'process.exec'],
+        }),
+      }),
+    );
   });
 
   it('refuses to install a package needing permissions the catalog did not declare', async () => {
@@ -260,7 +280,7 @@ describe('plugin marketplace', () => {
     );
 
     await expect(service.install('marketplace.demo')).rejects.toThrow(
-      'Plugin requires disallowed permissions: process.exec',
+      'Plugin package permissions do not match catalog: marketplace.demo',
     );
     expect(registry.listPlugins()).toEqual([]);
     await expect(listInstalledPlugins(registryDir)).resolves.toEqual([]);

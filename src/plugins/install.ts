@@ -238,21 +238,6 @@ async function installPluginFromPathUnlocked(
   const targetDir = installDir(registryDir, manifest.id);
   const index = await readIndex(registryDir);
   const now = Date.now();
-  const installed: InstalledPlugin = {
-    id: manifest.id,
-    name: manifest.name,
-    version: manifest.version,
-    dockscopeApiVersion: manifest.dockscopeApiVersion,
-    installedAt: index[manifest.id]?.installedAt ?? now,
-    updatedAt: now,
-    source: options.source ?? sourcePath,
-    sourceType: verifiedPackage ? 'package' : 'directory',
-    packageSha256: verifiedPackage?.bundle.sha256,
-    signatureAlgorithm: verifiedPackage?.bundle.signature?.algorithm,
-    signatureVerified: verifiedPackage?.signatureVerified,
-    grantedPermissions: grantedPermissionList(options.grantedPermissions ?? manifest.permissions),
-    path: targetDir,
-  };
   await mkdir(registryDir, { recursive: true });
   const stagingRoot = await mkdtemp(path.join(registryDir, '.install-'));
   const stagedDir = path.join(stagingRoot, 'plugin');
@@ -272,6 +257,23 @@ async function installPluginFromPathUnlocked(
         `Staged plugin ${stagedManifest.id}@${stagedManifest.version} does not match ${manifest.id}@${manifest.version}`,
       );
     }
+    const installed: InstalledPlugin = {
+      id: stagedManifest.id,
+      name: stagedManifest.name,
+      version: stagedManifest.version,
+      dockscopeApiVersion: stagedManifest.dockscopeApiVersion,
+      installedAt: index[stagedManifest.id]?.installedAt ?? now,
+      updatedAt: now,
+      source: options.source ?? sourcePath,
+      sourceType: verifiedPackage ? 'package' : 'directory',
+      packageSha256: verifiedPackage?.bundle.sha256,
+      signatureAlgorithm: verifiedPackage?.bundle.signature?.algorithm,
+      signatureVerified: verifiedPackage?.signatureVerified,
+      grantedPermissions: grantedPermissionList(
+        options.grantedPermissions ?? stagedManifest.permissions,
+      ),
+      path: targetDir,
+    };
 
     try {
       await rename(targetDir, backupDir);

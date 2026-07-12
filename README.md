@@ -56,7 +56,7 @@ Opens `http://localhost:4681`.
 | `-b, --bind <address>`               | `127.0.0.1` | Listen address (`0.0.0.0` inside a container, or set `DOCKSCOPE_BIND`) |
 | `--no-open`                          | —           | Don't open browser                                                     |
 | `--plugins <paths>`                  | —           | Load external plugins from a path-list                                 |
-| `--plugin-permissions <permissions>` | —           | Allowed external plugin permissions (`all` or comma-separated)         |
+| `--plugin-permissions <permissions>` | installed grants | Add globally allowed external plugin permissions                       |
 | `--plugin-config <file>`             | —           | Plugin configuration JSON file                                         |
 | `--plugin-state <file>`              | —           | Plugin enabled/disabled state JSON file                                |
 | `--plugin-secrets <file>`            | —           | Plugin secrets JSON file                                               |

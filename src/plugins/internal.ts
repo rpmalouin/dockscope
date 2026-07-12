@@ -13,19 +13,27 @@ import { createPluginStateStoreFromEnv } from './stateStore.js';
 
 /**
  * Permissions granted when a plugin was installed into the local registry.
- * Grants only apply to the exact installed directory, so a same-id plugin
- * loaded from another --plugins path does not inherit them.
+ * Grants apply only when both the installed plugin id and directory match.
  */
 export async function installedPermissionGrants(
   env: NodeJS.ProcessEnv,
 ): Promise<ExternalPluginPermissionGrants> {
+  if (env.DOCKSCOPE_DISABLE_EXTERNAL_PLUGINS === '1') {
+    return () => [];
+  }
   const registryDir = env.DOCKSCOPE_PLUGIN_REGISTRY || defaultPluginRegistryDir();
   try {
     const installed = await listInstalledPlugins(registryDir);
     const byPath = new Map(
-      installed.map((plugin) => [path.resolve(plugin.path), plugin.grantedPermissions]),
+      installed.map((plugin) => [
+        path.resolve(plugin.path),
+        { pluginId: plugin.id, permissions: plugin.grantedPermissions },
+      ]),
     );
-    return (_manifest, manifestPath) => byPath.get(path.resolve(path.dirname(manifestPath))) ?? [];
+    return (manifest, manifestPath) => {
+      const grant = byPath.get(path.resolve(path.dirname(manifestPath)));
+      return grant?.pluginId === manifest.id ? grant.permissions : [];
+    };
   } catch {
     return () => [];
   }

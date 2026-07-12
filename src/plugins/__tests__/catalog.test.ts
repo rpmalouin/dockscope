@@ -4,6 +4,8 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 import { createPluginPackageFromPath } from '../package';
+import { listInstalledPlugins } from '../install';
+import type { PluginPermission } from '../../core/capabilities';
 import {
   installPluginFromCatalog,
   loadPluginCatalog,
@@ -13,7 +15,7 @@ import {
   type PluginCatalogTrustStore,
 } from '../catalog';
 
-async function createPluginDir(): Promise<string> {
+async function createPluginDir(permissions: readonly PluginPermission[] = []): Promise<string> {
   const root = await mkdtemp(path.join(tmpdir(), 'dockscope-catalog-plugin-'));
   const pluginDir = path.join(root, 'plugin');
   await mkdir(pluginDir);
@@ -26,7 +28,7 @@ async function createPluginDir(): Promise<string> {
       dockscopeApiVersion: '1',
       entry: './plugin.mjs',
       capabilities: ['ui.command'],
-      permissions: [],
+      permissions,
       commands: [{ id: 'hello', title: 'Hello' }],
     }),
     'utf-8',
@@ -179,6 +181,62 @@ describe('plugin catalog', () => {
     await expect(
       installPluginFromCatalog({ catalogSource: catalogPath, pluginId: 'catalog.incompatible' }),
     ).rejects.toThrow('Plugin catalog entry is incompatible');
+  });
+
+  it('rejects packages whose permissions differ from the reviewed catalog entry', async () => {
+    const pluginDir = await createPluginDir(['process.exec']);
+    const outputDir = await mkdtemp(path.join(tmpdir(), 'dockscope-catalog-permissions-'));
+    const packagePath = path.join(outputDir, 'catalog-demo.dockscope-plugin');
+    const registryDir = path.join(outputDir, 'registry');
+    const catalogPath = path.join(outputDir, 'catalog.json');
+    const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+    const privateKeyPem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const publicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const bundle = await createPluginPackageFromPath({
+      sourcePath: pluginDir,
+      outFile: packagePath,
+      privateKey: privateKeyPem,
+      keyId: 'test-key',
+    });
+    await writeFile(
+      catalogPath,
+      JSON.stringify({
+        format: PLUGIN_CATALOG_FORMAT,
+        name: 'Permission Catalog',
+        entries: [
+          {
+            id: 'catalog.demo',
+            name: 'Catalog Demo',
+            version: '1.0.0',
+            capabilities: ['ui.command'],
+            permissions: [],
+            packageUrl: './catalog-demo.dockscope-plugin',
+            packageSha256: bundle.sha256,
+            signature: {
+              algorithm: 'ed25519',
+              publicKey: publicKeyPem,
+              keyId: 'test-key',
+            },
+          },
+        ],
+      }),
+      'utf-8',
+    );
+    await signPluginCatalogFile({
+      catalogPath,
+      privateKey: privateKeyPem,
+      keyId: 'catalog-key',
+    });
+
+    await expect(
+      installPluginFromCatalog({
+        catalogSource: catalogPath,
+        pluginId: 'catalog.demo',
+        registryDir,
+        catalogPublicKey: publicKeyPem,
+      }),
+    ).rejects.toThrow('Plugin package permissions do not match catalog: catalog.demo');
+    await expect(listInstalledPlugins(registryDir)).resolves.toEqual([]);
   });
 
   it('requires matching catalog signatures when a catalog public key is configured', async () => {

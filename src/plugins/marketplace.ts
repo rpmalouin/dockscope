@@ -170,7 +170,7 @@ function localMarketplaceEntry(
     screenshots: [],
     tags: [],
     capabilities: runtime ? [...runtime.manifest.capabilities] : [],
-    permissions: runtime ? [...runtime.manifest.permissions] : [],
+    permissions: runtime ? [...runtime.manifest.permissions] : [...installed.grantedPermissions],
     installed,
     runtime,
     state: 'local',

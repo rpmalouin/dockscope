@@ -32,6 +32,8 @@ DOCKSCOPE_DISABLE_EXTERNAL_PLUGINS=1 dockscope up
 
 `DOCKSCOPE_PLUGIN_PATHS` uses the platform path delimiter (`:` on Linux/macOS, `;` on Windows). Each entry can be either a plugin directory containing `plugin.json` or a directory containing multiple plugin directories. The local registry is `~/.dockscope/plugins` by default and is included automatically unless external plugins are disabled.
 
+An explicit Marketplace or CLI install persists the exact permissions reviewed at install time. The grant is bound to the installed plugin ID and registry path, and is reused on restart and hot reload. Plugins loaded directly from `DOCKSCOPE_PLUGIN_PATHS` receive no permissions by default and rely on `DOCKSCOPE_PLUGIN_PERMISSIONS` or `--plugin-permissions` for globally allowed permissions.
+
 DockScope uses its official GitHub Pages catalog by default and pins the `official-catalog-v1` Ed25519 public key in the application. `DOCKSCOPE_PLUGIN_CATALOG` replaces the official URL with a custom catalog. `DOCKSCOPE_PLUGIN_CATALOG_PUBLIC_KEY` contains one custom pinned public key, while `DOCKSCOPE_PLUGIN_CATALOG_TRUST` contains a JSON trust store for key overlap or revocation. Use `--no-official-plugin-catalog` or `DOCKSCOPE_DISABLE_OFFICIAL_PLUGIN_CATALOG=1` for an intentionally catalog-free instance. `DOCKSCOPE_PLUGIN_ALLOW_UNSIGNED=1` is intended for local development only; by default marketplace installs require each catalog entry to include an Ed25519 package signature.
 
 ## Manifest
@@ -148,7 +150,7 @@ dockscope plugin:catalog:install example.plugin --catalog ./plugin-catalog.json
 Installed plugins are copied into `~/.dockscope/plugins` by default and are loaded automatically on `dockscope up`. Installing also grants the plugin its reviewed permissions, so installed plugins load without a `--plugin-permissions` policy (see [Permissions](#permissions)). Use `--plugin-registry` or `DOCKSCOPE_PLUGIN_REGISTRY` to point DockScope at another local registry:
 
 ```bash
-dockscope up --plugin-registry ./installed-plugins --plugin-permissions all
+dockscope up --plugin-registry ./installed-plugins
 ```
 
 ## Data Providers
@@ -506,7 +508,7 @@ The local catalog signer trust store is deliberately outside the signed catalog,
 
 For package-key rotation, publish both keys in the signed catalog policy, mark the old key `retiring`, start signing packages with the new key, then add the old id to `revokedPackageKeyIds` after the migration window. For catalog-root rotation, distribute a local trust store containing both signer keys before switching the catalog signature; remove or revoke the old signer only after clients have received the new root. Emergency package revocations may target a plugin id, version, SHA-256, or any combination.
 
-Marketplace installs reject `yanked` entries, incompatible entries, hash mismatches, untrusted or revoked keys, revoked packages, and unsigned package entries by default. Package contents are fully verified in a staging directory, then the plugin directory and registry index are activated atomically. A failed activation restores the previous version. Use `--allow-unsigned-plugins`, `DOCKSCOPE_PLUGIN_ALLOW_UNSIGNED=1`, or `dockscope plugin:catalog:install --allow-unsigned` only for local development catalogs.
+Marketplace installs reject `yanked` entries, incompatible entries, hash mismatches, untrusted or revoked keys, revoked packages, and unsigned package entries by default. The capabilities and permissions displayed from the catalog must exactly match the signed package manifest before installation. Package contents are fully verified in a staging directory, then the plugin directory and registry index are activated atomically. A failed activation restores the previous version. Use `--allow-unsigned-plugins`, `DOCKSCOPE_PLUGIN_ALLOW_UNSIGNED=1`, or `dockscope plugin:catalog:install --allow-unsigned` only for local development catalogs.
 
 Marketplace entries can include `iconUrl`, `screenshots`, `repositoryUrl`, `readmeUrl`, and inline `readme` text. DockScope renders screenshots and inline README content in the install/update review panel.
 
@@ -680,7 +682,7 @@ export default definePluginFactory(({ manifest }) => ({ manifest }));
 
 External plugin code is imported only after manifest permissions pass policy checks. A permission passes when it is either in the global `--plugin-permissions` / `DOCKSCOPE_PLUGIN_PERMISSIONS` policy or was granted when the plugin was installed.
 
-Installing a plugin is the consent step: `plugin:install` grants the manifest's declared permissions, and marketplace installs grant the permissions listed in the catalog entry, which are the ones shown in the install review dialog. If the downloaded package asks for more than the catalog declared, loading fails and names the extra permissions. Grants are recorded in the registry's `installed.json`, apply only to the installed plugin directory, and are removed on uninstall. Plugins loaded from `--plugins` paths were never installed, so they rely on the global policy alone; use `--plugin-permissions all` during development.
+Installing a plugin is the consent step: `plugin:install` grants the manifest's declared permissions, and marketplace installs grant the permissions listed in the catalog entry, which are the ones shown in the install review dialog. The signed package capabilities and permissions must exactly match that catalog entry before registry activation. Grants are recorded in the registry's `installed.json`, apply only when both the installed plugin ID and directory match, and are removed on uninstall. Plugins loaded from `--plugins` paths were never installed, so they rely on the global policy alone; use `--plugin-permissions all` during development.
 
 Plugin factories receive a restricted `host` API. Host helpers check the plugin's declared permissions at runtime:
 
