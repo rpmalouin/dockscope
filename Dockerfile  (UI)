@@ -9,4 +9,4 @@ EXPOSE 4681
 # Run DockScope UI bound to all interfaces
 CMD ["dockscope", "up", "--bind", "0.0.0.0"]
 
-# build the image with ---  docker build -t dockscope-ui ---- inside the folder with the Dockerfile
+# build the image with ---  docker build -t dockscope-ui ---- inside the folder with the Dockerfile once build the image will stay in docker until you remove it
