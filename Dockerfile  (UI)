@@ -1,0 +1,10 @@
+FROM node:20-slim
+
+# Install DockScope globally
+RUN npm install -g dockscope
+
+# Expose the UI port
+EXPOSE 4681
+
+# Run DockScope UI bound to all interfaces
+CMD ["dockscope", "up", "--bind", "0.0.0.0"]
