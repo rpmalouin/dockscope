@@ -1,0 +1,183 @@
+# Microservices Testbench
+
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+ # ── API Layer ───────────────────────────────────────────────
+api:
+build: ./services/api
+command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+ # API depends on core infra services being healthy
+depends_on:
+postgres:
+condition: service_healthy
+redis:
+condition: service_healthy
+rabbitmq:
+condition: service_healthy
+
+environment:
+DATABASE_URL: postgres://app:supersecret@postgres:5432/appdb
+REDIS_URL: redis://redis:6379/0
+CELERY_BROKER_URL: amqp://app:rabbitsecret@rabbitmq:5672//
+CELERY_RESULT_BACKEND: redis://redis:6379/1
+
+ # API participates in both data and backend networks
+networks:
+ - data
+ - backend
+
+ports:
+ - "8000:8000"
+
+ # Healthcheck uses Python (curl is not installed in python:3.11-slim)
+healthcheck:
+test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+interval: 10s
+timeout: 5s
+retries: 5
+
+ # ── Celery Worker ───────────────────────────────────────────
+worker:
+build: ./services/api
+command: celery -A app.celery_app worker --loglevel=INFO
+depends_on:
+api:
+condition: service_started
+redis:
+condition: service_healthy
+rabbitmq:
+condition: service_healthy
+networks:
+ - backend
+
+  # ── Celery Scheduler (Beat) ─────────────────────────────────
+scheduler:
+build: ./services/api
+command: celery -A app.celery_app beat --loglevel=INFO
+depends_on:
+api:
+condition: service_started
+redis:
+condition: service_healthy
+rabbitmq:
+condition: service_healthy
+networks:
+ - backend
+
+  # ── Frontend (React + Nginx) ────────────────────────────────
+frontend:
+build: ./services/frontend
+depends_on:
+api:
+condition: service_healthy
+ports:
+ - "8080:80"
+networks:
+ - backend
+
+  # ── Postgres Database ───────────────────────────────────────
+postgres:
+image: postgres:16-alpine
+environment:
+POSTGRES_USER: app
+POSTGRES_PASSWORD: supersecret
+POSTGRES_DB: appdb
+volumes:
+ - postgres_data:/var/lib/postgresql/data
+networks:
+ - data
+healthcheck:
+test: ["CMD-SHELL", "pg_isready -U app"]
+interval: 10s
+timeout: 5s
+retries: 5
+
+ # ── Redis Cache / Celery Backend ─────────────────────────────
+redis:
+image: redis:7-alpine
+networks:
+ - backend
+healthcheck:
+test: ["CMD", "redis-cli", "ping"]
+interval: 10s
+timeout: 5s
+retries: 5
+
+ # ── RabbitMQ Broker ─────────────────────────────────────────
+rabbitmq:
+image: rabbitmq:3-management-alpine
+environment:
+RABBITMQ_DEFAULT_USER: app
+RABBITMQ_DEFAULT_PASS: rabbitsecret
+ports:
+ - "15672:15672"   # RabbitMQ management UI
+networks:
+ - backend
+healthcheck:
+test: ["CMD", "rabbitmq-diagnostics", "ping"]
+interval: 10s
+timeout: 5s
+retries: 5
+
+ # ── Prometheus Monitoring ───────────────────────────────────
+prometheus:
+image: prom/prometheus:latest
+volumes:
+ - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+ports:
+ - "9090:9090"
+networks:
+ - backend
+
+  # ── Grafana Dashboards ──────────────────────────────────────
+grafana:
+image: grafana/grafana:latest
+ports:
+ - "3000:3000"
+networks:
+ - backend
+
+  # ── Adminer (DB UI) ─────────────────────────────────────────
+adminer:
+image: adminer:latest
+ports:
+ - "8081:8080"
+networks:
+ - data
+
+# ── DockSope Docker Monitoring ─────────────────────────────────────────
+dockscope:
+#    image: manuelrt/dockscope:latest
+image: ghcr.io/manuelr-t/dockscope
+container_name: dockscope
+privileged: true
+volumes:
+ - /var/run/docker.sock:/var/run/docker.sock:ro
+ports:
+ - "8082:8080"
+networks:
+ - backend
+
+dockscope-ui:
+  image: dockscope-ui
+  container_name: dockscope-ui
+  privileged: true
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock:ro
+  ports:
+    - "4681:4681"
+  networks:
+    - backend
+  restart: unless-stopped
+
+# ── Networks ──────────────────────────────────────────────────
+networks:
+  data:
+backend:
+
+# ── Volumes ───────────────────────────────────────────────────
+volumes:
+postgres_data:
