@@ -1,6 +1,6 @@
 This fork exists because the upstream Docker image only provides the Prometheus exporter.
 The full DockScope UI (3D graph, logs, shell, anomaly detection) only runs via npx dockscope up.
-This fork packages the UI into a standalone Docker container for production use.
+This fork packages the UI into a complete reporting system, see the production ready docker-compose.yaml and the Dockerfile  UI.
 
 # DockScope
 
