@@ -1,3 +1,7 @@
+This fork exists because the upstream Docker image only provides the Prometheus exporter.
+The full DockScope UI (3D graph, logs, shell, anomaly detection) only runs via npx dockscope up.
+This fork packages the UI into a standalone Docker container for production use.
+
 # DockScope
 
 [![npm version](https://img.shields.io/npm/v/dockscope?color=cb3837&logo=npm)](https://www.npmjs.com/package/dockscope)
